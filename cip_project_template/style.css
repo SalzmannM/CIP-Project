@@ -1,0 +1,11 @@
+/* Custom styles for CIP project report */
+
+/* Improve table readability */
+table {
+  font-size: 0.9em;
+}
+
+/* Code block styling */
+.cell-output {
+  margin-top: 0.5em;
+}

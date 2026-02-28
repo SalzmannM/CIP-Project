@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+.jupyter_cache/
+
+# Quarto
+/.quarto/
+*_files/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Data (large files — keep in .gitignore if too big, submit separately as ZIP)
+# Uncomment if data files are too large for git:
+# data/*.json
+# data/*.xlsx
+# data/*.csv
+
+# Stop flag (used for scraping control)
+STOP.flag
