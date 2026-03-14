@@ -1,0 +1,1216 @@
+---
+title: "Swiss Public Sector Job Market Analysis"
+subtitle: "Analysis - CIP Project Group 106"
+author: ["Saidkosim Abulkosimov", "Alina Caspar", "Andrin Lehmann", "Maurice Salzmann"]
+title-block-banner: true
+number-sections: true
+number-depth: 3
+toc: true
+toc-location: right
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+    code-tools: true
+    code-tools-location: body
+    code-line-numbers: true
+    code-block-border-left: true
+    equation-numbering: true
+    callout-numbered: true
+    css: style.css
+
+execute:
+  echo: true
+  warning: false
+  message: false
+  cache: false
+jupyter: python3
+  
+editor_options:
+  chunk_output_type: console
+---
+
+# Introduction and Overview
+
+This project analyzes job advertisements within the Swiss public sector to examine how job requirements and working conditions vary depending on the candidate's field, as well as to compare patterns across different organizational types (e.g., cantons, municipalities, hospitals). The goal of this project is to demonstrate how web-scraped data can be gathered, cleaned, and analyzed within a data science process to answer research questions through visualization and quantitative analysis. For this purpose, we obtained publicly available listing data from publicjobs.ch, a dedicated job platform for the Swiss public sector. The dataset was enriched with official baseline employment distributions and salary benchmarks from the Swiss Federal Statistical Office (BFS), specifically the SAKE survey and the Lohnstrukturerhebung (LSE) 2022, allowing us to identify structural discrepancies and current labor market momentum. The acquisition approach relies on automated dynamic web scraping using Selenium and BeautifulSoup, complemented by BFS reference data integration.
+
+# Data Acquisition
+
+## Legal, Ethics, and Access
+
+All data used in this project come from publicly accessible sources. The *robots.txt* file of publicjobs.ch was reviewed prior to data collection to ensure compliance with its crawling policies. We strictly avoided restricted paths (e.g., direct application links). The platform's `robots.txt` permits general access to `/jobs` listing pages, which is the only area our scraper interacts with.
+
+To extract the data, we implemented a dynamic web scraping approach using Selenium. This was necessary to properly render JavaScript-loaded elements, handle cookie banners, and interact with the dynamic pagination. We utilized polite pauses (randomized time intervals) between page requests to minimize server load and emulate natural browsing behavior. Additional data from the BFS are used under open data terms, and no personal or user-related information is collected.
+
+## Environment Setup: Package Imports, Data Paths, and Web Request Configuration
+
+This code imports all necessary Python libraries and defines file paths for project data sources and outputs.
+
+```{python}
+# Standard library
+import os, re, sys, time, random, json, threading
+from itertools import product
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# Third-party libraries
+import requests
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import plotly.express as px
+import plotly.graph_objects as go
+
+# Scraping libraries (used in scraper script, imported here for reference)
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from bs4 import BeautifulSoup
+
+# Define base data directory
+data_path = "public_jobs_analysis/data"
+if not os.path.exists(data_path):
+    data_path = "data"
+
+# Define file paths for data sources and intermediate outputs
+path_df_jobs_raw = os.path.join(data_path, "publicjobs_raw.json")             # raw scraped job listings (overview)
+path_df_jobs_benefits = os.path.join(data_path, "publicjobs_benefits.json")   # benefits from detail pages
+path_df_jobs_cleaned = os.path.join(data_path, "publicjobs_cleaned.json")     # cleaned job listings (merged)
+path_df_bfs_sake = os.path.join(data_path, "bfs_besta.json")                 # BFS BESTA employment data (via PX-Web API)
+path_df_bfs_lse = os.path.join(data_path, "bfs_lse_isco.json")               # BFS LSE salary data (parsed from Excel)
+path_lse_excel = os.path.join(data_path, "bfs_lse_2022_isco.xlsx")           # BFS LSE 2022 raw Excel download
+
+# #ToDo: Add additional file paths as needed for:
+# - any additional BFS reference datasets
+```
+
+## Dynamic Data Extraction with Selenium
+
+The following script initializes a Chrome WebDriver, navigates the job platform, explicitly declines tracking cookies via DOM interaction, and systematically extracts structured information from the job cards. publicjobs.ch renders its listings dynamically via JavaScript, requiring Selenium to interact with the live DOM rather than parsing static HTML alone.
+
+The scraper performs the following steps:
+
+1. A Chrome WebDriver instance is started and navigated to the `/jobs` overview page. After the initial page load, a cookie consent banner is dismissed via an explicit DOM click on the decline button.
+2. On each page, BeautifulSoup parses the rendered HTML to locate all job card elements (`div.molecule-business-advertisement`). For each card, the scraper extracts the job title and detail URL from the first anchor tag, the company name from a labeled span element, and structured metadata fields (posting date, occupation field, workload, city, organization type) by matching Font Awesome icon classes to their corresponding value spans.
+3. The raw workload string (e.g., "80 – 100", "Vollzeit", "60") is parsed into normalized FTE boundaries (`fte_from`, `fte_to`) and a categorical work-time label. The canton is inferred from the URL path structure.
+4. After all cards on a page are processed, the scraper clicks the "Nächste Seite" pagination button using JavaScript execution (to avoid overlay-related click interception) and waits a randomized interval before loading the next page. A duplicate check based on detail URLs prevents repeated entries.
+
+```{python}
+#| eval: false
+
+# --- Scraper Configuration ---
+driver = webdriver.Chrome()
+base_url = "https://publicjobs.ch"
+
+# How many pages to scrape (73 pages available as of March 2026)
+max_pages = 73
+
+# Start on the jobs overview page
+driver.get(f"{base_url}/jobs")
+
+# Wait for initial page load
+time.sleep(5)
+
+# --- Close Cookie Banner ---
+try:
+    # Wait up to 5 seconds until cookie-banner decline button is clickable
+    decline_button = WebDriverWait(driver, 5).until(
+        EC.element_to_be_clickable((By.ID, "hs-eu-decline-button"))
+    )
+    decline_button.click()
+    print("cookie-banner declined")
+    
+    # Short break until cookie-banner animation completes
+    time.sleep(1.5) 
+except Exception:
+    print("did not find a cookie banner")
+
+# --- Main Scraping Loop ---
+jobs = []
+seen_urls = set()
+
+for page in range(1, max_pages + 1):
+
+    print(f"\n--- Page {page} ---")
+
+    # Polite pause: wait for jobs to load after page change
+    time.sleep(random.uniform(2.5, 4.5))
+
+    html = driver.page_source
+    soup = BeautifulSoup(html, "html.parser")
+
+    # Find all job cards on the page
+    # Each job is a <div class="molecule-business-advertisement ...">
+    articles = soup.find_all("div", class_="molecule-business-advertisement")
+
+    print(f"  Jobs on this page: {len(articles)}")
+
+    for article in articles:
+        try:
+
+            # --- Extract detail URL and title ---
+            # The first <a> tag contains href and title attributes
+            link_tag = article.find("a", href=True)
+
+            if not link_tag:
+                print("  No link found → skipping")
+                continue
+
+            detail_path = link_tag.get("href", "")
+            detail_url = base_url + detail_path
+            title = link_tag.get("title", "")
+
+            # Duplicate check via URL set
+            if detail_url in seen_urls:
+                continue
+            seen_urls.add(detail_url)
+
+            if not title:
+                # Fallback: extract title from h3 element
+                h3 = article.find("h3")
+                title = h3.get_text(strip=True) if h3 else None
+
+            # --- Extract company name ---
+            # Company is in <span class="...molecule-business-advertisement__owner">
+            company_tag = article.find(
+                "span", class_=lambda c: c and "molecule-business-advertisement__owner" in c
+            )
+            company = None
+            if company_tag:
+                val = company_tag.find("span", class_="molecule-typography-label__value")
+                company = val.get_text(strip=True) if val else None
+
+            # --- Extract structured fields via Font Awesome icon classes ---
+            # publicjobs uses FA icons to label each metadata field:
+            #   fa-calendar     → posting date
+            #   fa-briefcase    → occupation field (Berufsfeld)
+            #   fa-percent      → workload (Vollzeit / 50-70 / etc.)
+            #   fa-location-dot → city
+            #   fa-building     → organisation type (Branche)
+
+            posting_date = None
+            occupation_field = None
+            workload_raw = None
+            city = None
+            org_type = None
+
+            # Find all label spans that contain an icon
+            all_labels = article.find_all(
+                "span", 
+                class_=lambda c: c and "molecule-typography-label" in c and "non-selectable" in str(c)
+            )
+
+            for label in all_labels:
+                # Skip the company label (already extracted)
+                if "molecule-business-advertisement__owner" in str(label.get("class", [])):
+                    continue
+
+                # Find the icon inside this label
+                icon = label.find("i", class_=lambda c: c and "atom-icon-fontawesome" in c)
+                # Find the value span
+                value_span = label.find("span", class_="molecule-typography-label__value")
+
+                if not icon or not value_span:
+                    continue
+
+                icon_classes = " ".join(icon.get("class", []))
+                value = value_span.get_text(strip=True)
+
+                # Match icon class to field
+                if "fa-calendar" in icon_classes:
+                    posting_date = value
+                elif "fa-briefcase" in icon_classes:
+                    occupation_field = value
+                elif "fa-percent" in icon_classes:
+                    workload_raw = value
+                elif "fa-location-dot" in icon_classes:
+                    city = value
+                elif "fa-building" in icon_classes:
+                    org_type = value
+
+            # --- Parse workload string into FTE boundaries ---
+            fte_from = None
+            fte_to = None
+            work_time = None
+
+            if workload_raw:
+                if workload_raw.lower() == "vollzeit":
+                    work_time = "Vollzeit"
+                    fte_from = 1.0
+                    fte_to = 1.0
+                elif workload_raw.lower() == "teilzeit":
+                    work_time = "Teilzeit"
+                else:
+                    # Try to parse range: "50 - 70" or "80 - 100"
+                    range_match = re.search(r"(\d{1,3})\s*[-–]\s*(\d{1,3})", workload_raw)
+                    if range_match:
+                        fte_from = float(range_match.group(1)) / 100
+                        fte_to = float(range_match.group(2)) / 100
+                        work_time = "Vollzeit" if fte_to >= 0.9 else "Teilzeit"
+                    else:
+                        # Single number: "100" or "60"
+                        single_match = re.search(r"(\d{1,3})", workload_raw)
+                        if single_match:
+                            pct = float(single_match.group(1))
+                            if pct <= 100:
+                                fte_from = pct / 100
+                                fte_to = pct / 100
+                                work_time = "Vollzeit" if pct >= 90 else "Teilzeit"
+
+            # --- Extract canton from URL path ---
+            # URL format: /jobs/zurich/medizin-arzte-pflege/133688-...
+            # The second path segment corresponds to the canton
+            canton = None
+            url_parts = detail_path.strip("/").split("/")
+            if len(url_parts) >= 2:
+                canton = url_parts[1]  # e.g. "zurich", "bern", "glarus"
+
+            print(f"  ✓ {title[:60]:60s} | {company or 'N/A':25s} | {city or 'N/A'}")
+
+            # Consolidate extracted data into dictionary
+            job_data = {
+                "title": title,
+                "company": company,
+                "city": city,
+                "canton": canton,
+                "posting_date": posting_date,
+                "occupation_field": occupation_field,
+                "org_type": org_type,
+                "workload_raw": workload_raw,
+                "fte_from": fte_from,
+                "fte_to": fte_to,
+                "work_time": work_time,
+                "detail_url": detail_url,
+            }
+
+            jobs.append(job_data)
+
+        except Exception as e:
+            print(f"  Skipping job due to error: {e}")
+            continue
+
+    print(f"  Total so far: {len(jobs)}")
+
+    # --- Pagination: click "Nächste Seite" button ---
+    if page >= max_pages:
+        break
+
+    try:
+        # Find the "Nächste Seite" (next page) button
+        next_button = driver.find_element(
+            By.CSS_SELECTOR, 'button[aria-label="Nächste Seite"]'
+        )
+
+        # Check if button is disabled (last page reached)
+        is_disabled = next_button.get_attribute("aria-disabled")
+        if is_disabled == "true":
+            print("  Last page reached: stopping")
+            break
+
+        # Scroll to button so it's visible
+        driver.execute_script("arguments[0].scrollIntoView(true);", next_button)
+        time.sleep(0.5)
+
+        # Click via JavaScript to avoid click-interception by overlays
+        driver.execute_script("arguments[0].click();", next_button)
+
+    except Exception as e:
+        print(f"  Pagination error: {e} → stopping")
+        break
+
+
+print(f"\n=== Total Jobs scraped: {len(jobs)} ===")
+
+# --- Create DataFrame and export as JSON ---
+df = pd.DataFrame(jobs)
+
+print(f"\nColumns: {list(df.columns)}")
+print(f"Shape: {df.shape}")
+
+# Export to JSON (preferred over CSV for encoding safety and null handling)
+df.to_json(path_df_jobs_raw, orient="records", indent=2, force_ascii=False)
+print(f"\nExported raw data to: {path_df_jobs_raw}")
+
+# Close browser
+driver.quit()
+print("Browser closed")
+```
+
+## Detail Page Scraping: Benefit Extraction
+
+The overview cards on publicjobs.ch display only a subset of each listing's metadata. The full set of fringe benefits (e.g., "Beitrag ÖV Abo", "Home-Office", "Gute Vorsorgeleistungen") is only available on the individual detail pages. To answer **RQ3 (Benefits & Attractiveness)**, we therefore implement a second scraping pass that visits each job's `detail_url` and extracts the benefit tags from the detail page footer.
+
+On each detail page, benefits are rendered inside a footer container (`div.organism-business-jobs-detail__footer-benefits`). Each individual benefit is a `<button>` element with class `molecule-action-tag`, and the benefit text is located in a nested `<span class="molecule-typography-label__value">`. The scraper extracts all benefit labels per listing and stores them as a list of strings.
+
+To manage the volume of requests (~1'460 detail pages), the scraper uses parallel processing with multiple browser instances. Each worker runs its own headless Chrome session and processes a share of the URLs. Results are collected and saved after all workers complete their batch. A JSON checkpoint file allows the process to resume after interruption without re-scraping already visited URLs. Polite pauses between requests reduce server load per worker.
+
+```{python}
+#| eval: false
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+
+# --- Detail Page Scraper: Benefits (Parallel) ---
+# This script visits each job's detail_url to extract benefit tags.
+# It requires the overview scrape (path_df_jobs_raw) to be completed first.
+
+# Configuration
+n_workers = 5                # number of parallel browser instances
+pause_between = (1.5, 3.0)   # random pause range (seconds) between requests per worker
+checkpoint_every = 50        # save checkpoint every N results (across all workers)
+
+# Thread-safe lock for writing results
+lock = threading.Lock()
+
+
+def create_headless_chrome():
+    """Creates a headless Chrome WebDriver instance."""
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    return webdriver.Chrome(options=options)
+
+
+def scrape_benefits_from_url(url):
+    """
+    Opens a detail page in a thread-local browser and extracts benefit tags.
+
+    Args:
+        url: detail page URL
+
+    Returns:
+        dict with detail_url and list of benefit strings
+    """
+    # Each thread gets its own browser (stored in thread-local storage)
+    if not hasattr(thread_local, "driver"):
+        thread_local.driver = create_headless_chrome()
+
+    driver = thread_local.driver
+
+    try:
+        driver.get(url)
+        time.sleep(random.uniform(*pause_between))
+
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+
+        # Find the benefits container in the detail page footer
+        benefits_container = soup.find(
+            "div",
+            class_=lambda c: c and "organism-business-jobs-detail__footer-benefits" in c
+        )
+
+        benefits = []
+        if benefits_container:
+            # Each benefit is a <button class="molecule-action-tag ...">
+            # with text inside <span class="molecule-typography-label__value">
+            benefit_buttons = benefits_container.find_all(
+                "button",
+                class_=lambda c: c and "molecule-action-tag" in c
+            )
+            for btn in benefit_buttons:
+                value_span = btn.find(
+                    "span", class_="molecule-typography-label__value"
+                )
+                if value_span:
+                    text = value_span.get_text(strip=True)
+                    if text:
+                        benefits.append(text)
+
+        return {"detail_url": url, "benefits": benefits}
+
+    except Exception as e:
+        print(f"\n  Failed {url}: {e}")
+        return {"detail_url": url, "benefits": []}
+
+
+# --- Main execution ---
+
+# Thread-local storage for browser instances (one per worker thread)
+thread_local = threading.local()
+
+if not os.path.exists(path_df_jobs_raw):
+    print("Raw data not found — run the overview scraper (section 2.3) first.")
+else:
+    df_overview = pd.read_json(path_df_jobs_raw)
+    all_urls = df_overview["detail_url"].tolist()
+    total_nr = len(all_urls)
+    print(f"Total detail URLs: {total_nr}")
+
+    # Check for existing checkpoint (resume support)
+    if os.path.exists(path_df_jobs_benefits):
+        df_existing = pd.read_json(path_df_jobs_benefits)
+        scraped_urls = set(df_existing["detail_url"].dropna())
+        remaining_urls = [u for u in all_urls if u not in scraped_urls]
+        print(f"Resuming — already scraped: {len(scraped_urls)}, remaining: {len(remaining_urls)}")
+    else:
+        df_existing = pd.DataFrame(columns=["detail_url", "benefits"])
+        remaining_urls = all_urls
+        print("Starting fresh — no checkpoint found.")
+
+    # Collect results
+    all_results = list(df_existing.to_dict("records"))
+    completed = len(all_results)
+
+    print(f"Starting {n_workers} parallel workers for {len(remaining_urls)} URLs...")
+
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        # Submit all remaining URLs
+        future_to_url = {
+            executor.submit(scrape_benefits_from_url, url): url
+            for url in remaining_urls
+        }
+
+        for future in as_completed(future_to_url):
+            result = future.result()
+            all_results.append(result)
+            completed += 1
+
+            # Progress
+            pct = (completed / total_nr) * 100
+            sys.stdout.write(f"\rCompleted {completed}/{total_nr} ({pct:.1f}%)")
+            sys.stdout.flush()
+
+            # Periodic checkpoint save
+            if completed % checkpoint_every == 0:
+                with lock:
+                    pd.DataFrame(all_results).to_json(
+                        path_df_jobs_benefits,
+                        orient="records", indent=2, force_ascii=False
+                    )
+
+    # Final save
+    df_all_benefits = pd.DataFrame(all_results)
+    df_all_benefits.to_json(
+        path_df_jobs_benefits,
+        orient="records", indent=2, force_ascii=False
+    )
+
+    # Clean up: close all thread-local browsers
+    # (ThreadPoolExecutor doesn't expose thread locals directly,
+    #  but browsers will be garbage-collected when the script ends)
+
+    print(f"\n\nDetail scraping complete: {len(df_all_benefits)}/{total_nr}")
+    print(f"Saved to: {path_df_jobs_benefits}")
+```
+
+After the detail page scraper completes, we merge the benefit data back into the main dataset and encode the benefit lists as binary dummy variables for analysis.
+
+```{python}
+#| eval: false
+
+# --- Merge benefits into main dataset and create dummy variables ---
+if os.path.exists(path_df_jobs_benefits) and os.path.exists(path_df_jobs_raw):
+    df_overview = pd.read_json(path_df_jobs_raw)
+    df_benefits = pd.read_json(path_df_jobs_benefits)
+
+    # Merge on detail_url
+    df_merged = df_overview.merge(df_benefits, on="detail_url", how="left")
+
+    # Fill missing benefits with empty lists
+    df_merged["benefits"] = df_merged["benefits"].apply(
+        lambda x: x if isinstance(x, list) else []
+    )
+
+    # Inspect the most common benefit tags
+    all_benefits = df_merged["benefits"].explode().dropna()
+    print("--- Top 20 most frequent benefit tags ---")
+    print(all_benefits.value_counts().head(20))
+
+    # One-hot encode benefits into dummy columns
+    df_benefits_dummies = (
+        df_merged["benefits"]
+        .apply(lambda x: pd.Series({b: 1 for b in x}) if x else pd.Series(dtype=int))
+        .fillna(0)
+        .astype(int)
+    )
+    df_benefits_dummies = df_benefits_dummies.add_prefix("benefit_")
+
+    # Concatenate dummies to main DataFrame
+    df_with_benefits = pd.concat([df_merged, df_benefits_dummies], axis=1)
+
+    print(f"\nBenefit dummy columns added: {len(df_benefits_dummies.columns)}")
+    print(f"Sample columns: {list(df_benefits_dummies.columns[:10])}")
+else:
+    print("Run both the overview scraper (2.3) and detail scraper (2.4) first.")
+```
+
+::: {.callout-note}
+## Note on HTML Selectors
+The benefit tags are located inside `div.organism-business-jobs-detail__footer-benefits` on each detail page. Each benefit is a `<button class="molecule-action-tag">` with the text in a nested `<span class="molecule-typography-label__value">`. If publicjobs.ch updates their frontend, these selectors may need adjustment. Verify with browser DevTools (F12 → Elements) on any detail page.
+:::
+
+## Integration of BFS Reference Data
+
+To contextualize our scraped data, we enriched the dataset with official labor market statistics from the Swiss Federal Statistical Office (BFS). Two datasets are integrated: the BESTA employment statistics (for workload comparison in RQ2) and the LSE salary benchmarks (for salary enrichment).
+
+### BFS BESTA: Employment by Sector and Beschäftigungsgrad (via PX-Web API)
+
+To compare our scraped workload distributions with official statistics, we obtain employment data from the BFS Beschäftigungsstatistik (BESTA). This dataset provides quarterly employment counts broken down by Wirtschaftsabteilung (economic division, NOGA), Beschäftigungsgrad (full-time vs. part-time), and Geschlecht (gender).
+
+The data is retrieved programmatically from the [BFS PX-Web API](https://www.pxweb.bfs.admin.ch/pxweb/de/) using a POST request with a JSON query body. The table `px-x-0602000000_101` contains the relevant data. We request the most recent available year and all economic divisions to construct a baseline for comparison.
+
+```{python}
+#| eval: false
+
+# --- BFS BESTA: Employment by sector & Beschäftigungsgrad ---
+# Source: BFS PX-Web API, Table px-x-0602000000_101
+# "Beschäftigte nach Wirtschaftsabteilung, Beschäftigungsgrad und Geschlecht"
+#
+# Table dimensions (in order):
+#   [0] Wirtschaftsabteilung  — NOGA economic divisions
+#   [1] Geschlecht            — Total / Männer / Frauen
+#   [2] Beschäftigungsgrad    — Total / Vollzeit / Teilzeit
+#   [3] Quartal               — e.g. 2024Q3, 2024Q4, ...
+
+bfs_pxweb_base = "https://www.pxweb.bfs.admin.ch/api/v1/de"
+besta_table = "px-x-0602000000_101/px-x-0602000000_101.px"
+besta_url = f"{bfs_pxweb_base}/{besta_table}"
+
+if os.path.exists(path_df_bfs_sake):
+    df_bfs_besta = pd.read_json(path_df_bfs_sake)
+    print(f"BFS BESTA data loaded from cache: {len(df_bfs_besta)} rows")
+else:
+    # Step 1: Fetch table metadata to inspect variable codes and values
+    meta_response = requests.get(besta_url, timeout=60)
+    meta_response.raise_for_status()
+    meta = meta_response.json()
+
+    # Print available variables and their codes for reference
+    for var in meta["variables"]:
+        print(f"\n[{var['code']}] — {var['text']}")
+        for code, val in zip(var["values"][:8], var["valueTexts"][:8]):
+            print(f"  {code}: {val}")
+        if len(var["values"]) > 8:
+            print(f"  ... ({len(var['values'])} total values)")
+
+    # Step 2: Build query
+    # - Wirtschaftsabteilung: all sectors (no filter = returns all)
+    # - Geschlecht: only "Total" (we don't need gender split)
+    # - Beschäftigungsgrad: explicitly request Vollzeit + Teilzeit + Total
+    # - Quartal: last 4 quarters (most recent year)
+
+    # Find variable indices by code name (safer than hard-coded positions)
+    var_by_code = {v["code"]: v for v in meta["variables"]}
+
+    query_body = {
+        "query": [
+            {
+                "code": "Geschlecht",
+                "selection": {
+                    "filter": "item",
+                    "values": ["TOT"]  
+                }
+            },
+            {
+                "code": "Beschäftigungsgrad",
+                "selection": {
+                    "filter": "item",
+                    "values": ["TOT", "1", "2"]  # Total, Vollzeit, Teilzeit
+                }
+            },
+            {
+                "code": "Quartal",
+                "selection": {
+                    "filter": "top",
+                    "values": ["4"]  # last 4 quarters
+                }
+            }
+        ],
+        "response": {
+            "format": "json-stat2"
+        }
+    }
+
+    # Step 3: POST query to retrieve data
+    print("\nSending API request...")
+    response = requests.post(besta_url, json=query_body, timeout=60)
+    response.raise_for_status()
+    data = response.json()
+
+    # Step 4: Parse json-stat2 into flat DataFrame
+    dims = data["dimension"]
+    dim_names = list(data["id"])
+    dim_labels = {d: list(dims[d]["category"]["label"].values()) for d in dim_names}
+
+    # Build cartesian product of all dimension values
+    index_tuples = list(product(*[range(len(dim_labels[d])) for d in dim_names]))
+
+    rows = []
+    for idx_tuple in index_tuples:
+        # Calculate flat index (row-major order as per json-stat2 spec)
+        flat_idx = 0
+        multiplier = 1
+        for i in reversed(range(len(dim_names))):
+            flat_idx += idx_tuple[i] * multiplier
+            multiplier *= len(dim_labels[dim_names[i]])
+
+        row = {}
+        for i, d in enumerate(dim_names):
+            row[d] = dim_labels[d][idx_tuple[i]]
+        row["value"] = data["value"][flat_idx] if flat_idx < len(data["value"]) else None
+        rows.append(row)
+
+    df_bfs_besta = pd.DataFrame(rows)
+
+    # Save to JSON cache
+    df_bfs_besta.to_json(path_df_bfs_sake, orient="records", indent=2, force_ascii=False)
+    print(f"\nBFS BESTA data saved: {len(df_bfs_besta)} rows → {path_df_bfs_sake}")
+
+# Quick inspection
+print(f"\nDataset shape: {df_bfs_besta.shape}")
+print(f"Columns: {list(df_bfs_besta.columns)}")
+print(df_bfs_besta.head(15))
+```
+
+
+::: {.callout-note}
+## Note on PX-Web API Usage
+The BFS PX-Web API returns data in `json-stat2` format, which uses a compact multi-dimensional array representation. The parsing logic above flattens this into a standard tabular DataFrame. If the API table structure changes (e.g., new variable codes), the `query_body` filters may need adjustment. Always inspect the metadata response first (`GET` on the table URL) to verify the available variable codes and values.
+:::
+
+### BFS LSE Salary Benchmarks (Lohnstrukturerhebung 2022)
+
+To provide salary benchmarks per occupation group, we integrate data from the BFS Lohnstrukturerhebung (LSE) 2022. The LSE provides median gross monthly salaries by ISCO-08 occupation group, broken down by sector, gender, and Kompetenzniveau. Since the detailed LSE tables with ISCO-08 breakdowns are published as downloadable Excel files (not directly via the PX-Web API), we load the data from a locally stored file.
+
+The relevant BFS publication is: [LSE 2022 — Löhne nach Berufsgruppen ISCO](https://www.bfs.admin.ch/news/de/2024-0127).
+
+```{python}
+#| eval: false
+
+# --- BFS LSE 2022: Median salary by ISCO-08 occupation group ---
+# Source: BFS LSE 2022, downloaded from:
+# https://www.bfs.admin.ch/bfs/de/home/statistiken/arbeit-erwerb/
+#   loehne-erwerbseinkommen-arbeitskosten/lohnstruktur/berufsgruppen.html
+
+# File path for the locally stored LSE Excel file
+path_lse_excel = os.path.join(data_path, "bfs_lse_2022_isco.xlsx")
+
+if os.path.exists(path_df_bfs_lse):
+    df_bfs_lse = pd.read_json(path_df_bfs_lse)
+    print(f"BFS LSE data loaded from cache: {len(df_bfs_lse)} rows")
+
+elif os.path.exists(path_lse_excel):
+    # Read LSE Excel — typically the relevant sheet has median salaries
+    # by ISCO major/sub-major group
+    # Note: header row and column structure depend on the specific BFS file version
+    # Adjust header= and usecols= parameters after inspecting the file
+    df_bfs_lse = pd.read_excel(
+        path_lse_excel,
+        header=5,  # #ToDo: Verify header row in the actual downloaded file
+        sheet_name=0
+    )
+    
+    # Clean column names
+    df_bfs_lse.columns = df_bfs_lse.columns.str.strip()
+    
+    # Display raw structure for inspection
+    print("Raw LSE columns:", list(df_bfs_lse.columns))
+    print(df_bfs_lse.head(10))
+    
+    # #ToDo: Rename and select relevant columns after inspecting the file structure
+    # Expected columns to extract:
+    # - ISCO code (e.g., "1", "11", "21", "22", ...)
+    # - Occupation group name (German)
+    # - Median gross monthly salary (standardized to full-time equivalent)
+    # - Number of observations (Anzahl)
+    
+    # Example rename (adjust to actual column names):
+    # df_bfs_lse = df_bfs_lse.rename(columns={
+    #     "Berufsgruppe": "isco_group_name",
+    #     "Zentralwert (Median)": "median_salary",
+    # })
+    
+    # Save to JSON cache
+    df_bfs_lse.to_json(path_df_bfs_lse, orient="records", indent=2, force_ascii=False)
+    print(f"\nBFS LSE data saved: {len(df_bfs_lse)} rows → {path_df_bfs_lse}")
+
+else:
+    print("LSE Excel file not found!")
+    print(f"Please download the LSE 2022 ISCO salary table from BFS and save it as:")
+    print(f"  {path_lse_excel}")
+    print("Download from: https://www.bfs.admin.ch/bfs/de/home/statistiken/")
+    print("  arbeit-erwerb/loehne-erwerbseinkommen-arbeitskosten/")
+    print("  lohnstruktur/berufsgruppen.html")
+```
+
+### Mapping publicjobs.ch Occupation Fields to BFS Sectors and ISCO-08 Groups
+
+To enable joins between our scraped data and BFS reference datasets, we create explicit mapping tables. The publicjobs.ch platform uses its own occupation field categories (e.g., "Medizin / Ärzte / Pflege", "Informatik / IT"), which must be mapped to both NOGA economic divisions (for BESTA comparison) and ISCO-08 groups (for LSE salary benchmarks).
+
+```{python}
+#| eval: false
+
+# --- Mapping: publicjobs.ch occupation_field → ISCO-08 major groups ---
+# This mapping is approximate — some publicjobs categories span multiple ISCO groups.
+# We assign the most representative ISCO major group (1-digit) for each category.
+
+isco_mapping = {
+    "Medizin / Ärzte / Pflege":                     {"isco": "2", "isco_name": "Akademische Berufe"},
+    "Bildungswesen / Lehrtätigkeit / Sonderpädagogik": {"isco": "2", "isco_name": "Akademische Berufe"},
+    "Kaufmännisch / Verwaltung":                    {"isco": "4", "isco_name": "Bürokräfte und verwandte Berufe"},
+    "Informatik / IT":                               {"isco": "2", "isco_name": "Akademische Berufe"},
+    "Sozialwesen / Sozialarbeit":                    {"isco": "2", "isco_name": "Akademische Berufe"},
+    "Unterhalt / Handwerk / Aussenstellen":          {"isco": "7", "isco_name": "Handwerks- und verwandte Berufe"},
+    "Finanzen / Steuern":                            {"isco": "2", "isco_name": "Akademische Berufe"},
+    "Personalwesen / HR":                            {"isco": "2", "isco_name": "Akademische Berufe"},
+    "Recht / Justiz / Justizvollzug":                {"isco": "2", "isco_name": "Akademische Berufe"},
+    "Projektmanagement / Qualitätsmanagement":       {"isco": "2", "isco_name": "Akademische Berufe"},
+    "Architektur / Bauwesen":                        {"isco": "2", "isco_name": "Akademische Berufe"},
+    "Marketing / Kommunikation / PR":                {"isco": "2", "isco_name": "Akademische Berufe"},
+    "Gastronomie / Hauswirtschaft / Hotellerie":     {"isco": "5", "isco_name": "Dienstleistungsberufe und Verkäufer"},
+    "Öffentliche Sicherheit / Militär / Polizei":    {"isco": "5", "isco_name": "Dienstleistungsberufe und Verkäufer"},
+    "Logistik / Einkauf":                            {"isco": "4", "isco_name": "Bürokräfte und verwandte Berufe"},
+    "Kinderkrippe / Kinderbetreuung":                {"isco": "5", "isco_name": "Dienstleistungsberufe und Verkäufer"},
+    "Energie / Ingenieurwesen / Verkehr":             {"isco": "2", "isco_name": "Akademische Berufe"},
+    "NGO / NPO / Stiftungen":                        {"isco": "1", "isco_name": "Führungskräfte"},
+    "Stabsdienste / Führungsunterstützung":           {"isco": "1", "isco_name": "Führungskräfte"},
+    "Kirchwesen / Seelsorge":                        {"isco": "2", "isco_name": "Akademische Berufe"},
+    "Diverse":                                       {"isco": "9", "isco_name": "Hilfsarbeitskräfte"},
+}
+
+# Convert mapping to DataFrame for easy joining
+df_isco_mapping = pd.DataFrame.from_dict(isco_mapping, orient="index").reset_index()
+df_isco_mapping.columns = ["occupation_field", "isco_major", "isco_major_name"]
+
+print("--- ISCO-08 Mapping Table ---")
+print(df_isco_mapping.to_string(index=False))
+
+# #ToDo: After scraping, verify all unique occupation_field values are covered:
+# unmapped = set(df_filtered["occupation_field"].unique()) - set(isco_mapping.keys())
+# if unmapped:
+#     print(f"WARNING: Unmapped occupation fields: {unmapped}")
+```
+
+::: {.callout-note}
+## Note on Mapping Granularity
+The ISCO-08 mapping above uses 1-digit major groups, which is a coarse approximation. Several publicjobs.ch categories (e.g., "Informatik / IT", "Finanzen / Steuern") map to the same ISCO major group "2 — Akademische Berufe". For finer salary differentiation, a 2-digit sub-major group mapping would be preferable (e.g., ISCO 25 for IT, ISCO 24 for business/finance). This can be refined once the actual LSE file structure is inspected.
+:::
+
+## Disclaimer on Data Scope
+
+The scraper is configured to process all available pages on publicjobs.ch (73 pages as of March 2026, yielding approximately 1'460 job listings at 20 per page). Unlike platforms with tens of thousands of entries, this dataset size is manageable for a full scrape. As publicjobs.ch only lists currently active positions, the dataset represents a cross-sectional snapshot of the Swiss public sector job market at the time of scraping.
+
+# Data Transformation / Cleansing
+
+## Load Raw Dataset and Check for Gaps / Missing Data
+
+```{python}
+#| eval: false
+
+# Load raw scraped data
+if os.path.exists(path_df_jobs_raw):
+    df_raw = pd.read_json(path_df_jobs_raw)
+    print(f"Raw dataset loaded: {df_raw.shape[0]} rows, {df_raw.shape[1]} columns")
+else:
+    print("Raw data not found! Run the scraper first.")
+
+# Check for missing values per column
+print("\n--- Missing values per column ---")
+print(df_raw.isnull().sum())
+print(f"\n--- Percentage missing ---")
+print((df_raw.isnull().sum() / len(df_raw) * 100).round(1))
+```
+
+::: {.callout-important}
+## #ToDo: Discuss Missing Data Strategy
+After inspecting the missing value patterns, document the decision on how to handle gaps:
+
+- Which columns have acceptable missingness (e.g., `posting_date` might be missing for some listings)?
+- Should rows with missing `occupation_field` or `canton` be dropped or imputed?
+- Use a conservative approach (drop NAs) or targeted imputation where possible?
+:::
+
+## Ensure Appropriate Column Datatypes
+
+To ensure that the subsequent analysis can be carried out without datatype inconsistencies, the relevant columns are converted to their appropriate data types.
+
+```{python}
+#| eval: false
+
+df_cleaned = df_raw.copy()
+
+# Convert posting_date to datetime
+# publicjobs.ch uses format like "12.03.2026" (DD.MM.YYYY)
+df_cleaned["posting_date"] = pd.to_datetime(
+    df_cleaned["posting_date"], format="%d.%m.%Y", errors="coerce"
+)
+
+# Convert FTE columns to float
+df_cleaned["fte_from"] = pd.to_numeric(df_cleaned["fte_from"], errors="coerce")
+df_cleaned["fte_to"] = pd.to_numeric(df_cleaned["fte_to"], errors="coerce")
+
+# Convert categorical columns
+df_cleaned["work_time"] = df_cleaned["work_time"].astype("category")
+df_cleaned["canton"] = df_cleaned["canton"].astype("category")
+df_cleaned["occupation_field"] = df_cleaned["occupation_field"].astype("category")
+df_cleaned["org_type"] = df_cleaned["org_type"].astype("category")
+
+# Verify dtypes
+print(df_cleaned.dtypes)
+```
+
+## Summary Statistics of Key Variables
+
+To gain an initial overview of the dataset, we inspect the distributions of key categorical and numerical variables.
+
+```{python}
+#| eval: false
+
+# Overview of numerical columns
+print("--- FTE Distribution ---")
+print(df_cleaned[["fte_from", "fte_to"]].describe().round(2))
+
+# Overview of categorical columns
+print("\n--- Jobs per Canton (top 15) ---")
+print(df_cleaned["canton"].value_counts().head(15))
+
+print("\n--- Jobs per Occupation Field ---")
+print(df_cleaned["occupation_field"].value_counts().head(15))
+
+print("\n--- Jobs per Organization Type ---")
+print(df_cleaned["org_type"].value_counts().head(15))
+
+print("\n--- Workload Distribution ---")
+print(df_cleaned["work_time"].value_counts())
+
+print("\n--- Top Employers ---")
+print(df_cleaned["company"].value_counts().head(15))
+```
+
+## Check Values in Expected Ranges
+
+We validate that scraped values fall within plausible ranges.
+
+```{python}
+#| eval: false
+
+# FTE values should be between 0 and 1
+print("FTE range check:")
+print(f"  fte_from: min={df_cleaned['fte_from'].min()}, max={df_cleaned['fte_from'].max()}")
+print(f"  fte_to:   min={df_cleaned['fte_to'].min()}, max={df_cleaned['fte_to'].max()}")
+
+# Check for any FTE values outside [0, 1]
+invalid_fte = df_cleaned[
+    (df_cleaned["fte_from"] < 0) | (df_cleaned["fte_from"] > 1) |
+    (df_cleaned["fte_to"] < 0) | (df_cleaned["fte_to"] > 1)
+]
+print(f"\nRows with invalid FTE values: {len(invalid_fte)}")
+
+# Check canton values against known Swiss cantons
+known_cantons = [
+    "zurich", "bern", "luzern", "uri", "schwyz", "obwalden", "nidwalden",
+    "glarus", "zug", "freiburg", "solothurn", "basel-stadt", "basel-landschaft",
+    "schaffhausen", "appenzell-ausserrhoden", "appenzell-innerrhoden",
+    "st-gallen", "graubuenden", "aargau", "thurgau", "tessin", "waadt",
+    "wallis", "neuenburg", "genf", "jura"
+]
+# #ToDo: Verify the exact canton slug format used in publicjobs.ch URLs
+# and adjust the known_cantons list accordingly
+unknown_cantons = df_cleaned[~df_cleaned["canton"].isin(known_cantons)]["canton"].unique()
+print(f"\nUnknown canton slugs: {unknown_cantons}")
+```
+
+## Outlier Identification and Filtering
+
+::: {.callout-important}
+## #ToDo: Define and Implement Outlier Filtering
+After inspecting the summary statistics, define filtering rules:
+
+- Remove duplicate listings (already handled during scraping via `seen_urls`, but verify).
+- Remove rows with missing critical fields (`title`, `occupation_field`, `canton`).
+- Remove any jobs with clearly invalid FTE values.
+- Document the number of rows removed at each step.
+:::
+
+```{python}
+#| eval: false
+
+# #ToDo: Implement filtering pipeline
+# Example structure:
+# print(f"Before filtering: {len(df_cleaned)} rows")
+
+# # Remove rows with missing critical fields
+# df_filtered = df_cleaned.dropna(subset=["title", "occupation_field", "canton"])
+# print(f"After dropping missing critical fields: {len(df_filtered)} rows")
+
+# # Remove invalid FTE ranges
+# df_filtered = df_filtered[
+#     (df_filtered["fte_from"].isna()) |
+#     ((df_filtered["fte_from"] >= 0) & (df_filtered["fte_from"] <= 1))
+# ]
+# print(f"After FTE validation: {len(df_filtered)} rows")
+```
+
+## Canton Name Normalization and Mapping
+
+The canton information extracted from publicjobs.ch URLs uses lowercase slug format (e.g., "zurich", "graubuenden"). To enable merging with BFS datasets and proper visualization, we need to map these to official canton codes and names.
+
+```{python}
+#| eval: false
+
+# Mapping from publicjobs.ch URL slugs to official canton abbreviations
+canton_mapping = {
+    "zurich": "ZH", "bern": "BE", "luzern": "LU", "uri": "UR",
+    "schwyz": "SZ", "obwalden": "OW", "nidwalden": "NW", "glarus": "GL",
+    "zug": "ZG", "freiburg": "FR", "solothurn": "SO", "basel-stadt": "BS",
+    "basel-landschaft": "BL", "schaffhausen": "SH",
+    "appenzell-ausserrhoden": "AR", "appenzell-innerrhoden": "AI",
+    "st-gallen": "SG", "graubuenden": "GR", "aargau": "AG",
+    "thurgau": "TG", "tessin": "TI", "waadt": "VD",
+    "wallis": "VS", "neuenburg": "NE", "genf": "GE", "jura": "JU",
+}
+# #ToDo: Verify all canton slug values that actually appear in scraped data
+# and adjust mapping accordingly (e.g., check if "graubünden" vs "graubuenden")
+
+# df_filtered["canton_code"] = df_filtered["canton"].map(canton_mapping)
+# unmapped = df_filtered[df_filtered["canton_code"].isna()]["canton"].unique()
+# print(f"Unmapped cantons: {unmapped}")
+```
+
+## Enrichment: ISCO-08 Occupation Classification and Salary Join
+
+Using the mapping table defined in section 2.5.3, we add ISCO-08 major group codes and BFS LSE median salary benchmarks to the cleaned dataset.
+
+```{python}
+#| eval: false
+
+# Apply ISCO mapping (defined in section 2.5.3)
+df_filtered["isco_major"] = df_filtered["occupation_field"].map(
+    {k: v["isco"] for k, v in isco_mapping.items()}
+)
+df_filtered["isco_major_name"] = df_filtered["occupation_field"].map(
+    {k: v["isco_name"] for k, v in isco_mapping.items()}
+)
+
+# Check for unmapped fields
+unmapped = df_filtered[df_filtered["isco_major"].isna()]["occupation_field"].unique()
+if len(unmapped) > 0:
+    print(f"WARNING: Unmapped occupation fields: {unmapped}")
+else:
+    print("All occupation fields successfully mapped to ISCO-08 groups")
+
+# #ToDo: Join LSE median salaries (once LSE data is loaded and column names confirmed):
+# df_filtered = df_filtered.merge(
+#     df_bfs_lse[["isco_major", "median_salary"]],
+#     on="isco_major",
+#     how="left"
+# )
+# print(f"Salary data joined — rows with salary: {df_filtered['median_salary'].notna().sum()}")
+```
+
+## Save Cleaned Dataset
+
+```{python}
+#| eval: false
+
+# #ToDo: Uncomment after cleaning pipeline is finalized
+# df_filtered.to_json(
+#     path_df_jobs_cleaned,
+#     orient="records",
+#     indent=2,
+#     force_ascii=False
+# )
+# print(f"Cleaned dataset saved: {len(df_filtered)} rows → {path_df_jobs_cleaned}")
+```
+
+
+# Analysis: Geography, Workload Flexibility, and Benefits
+
+The collected and prepared data is used to examine three key research questions: We illustrate how public sector labor demand distributes across Swiss regions and organization types, analyze workload flexibility patterns compared to official BFS statistics, and assess which fringe benefits are most commonly offered.
+
+## RQ1: Geographic Distribution of Public Sector Labor Demand
+
+How does the current demand for public sector labour distribute across specific Swiss regions and organization types (e.g., healthcare vs. administration)?
+
+### Jobs by Canton
+
+::: {.callout-important}
+## #ToDo: Implement RQ1 Visualizations
+Create the following visualizations:
+
+1. **Choropleth map** of Switzerland showing job count per canton (use `plotly.express.choropleth_map` with Swiss cantons GeoJSON).
+2. **Bar chart** of jobs per occupation field, segmented by organization type.
+3. **Heatmap** showing the cross-tabulation of canton × occupation field.
+
+Use the canton codes mapped in the cleaning step. Load the Swiss cantons GeoJSON from a public source (e.g., GitHub).
+:::
+
+```{python}
+#| eval: false
+#| label: fig-jobs-per-canton
+#| fig-cap: "Geographic distribution of public sector job listings across Swiss cantons"
+
+# #ToDo: Implement choropleth map
+# import urllib.request
+# 
+# geojson_url = "https://raw.githubusercontent.com/empet/Datasets/master/swiss-cantons.geojson"
+# with urllib.request.urlopen(geojson_url) as url:
+#     swiss_geo = json.loads(url.read().decode())
+# 
+# # Count jobs per canton
+# canton_counts = df_filtered["canton_code"].value_counts().reset_index()
+# canton_counts.columns = ["canton_code", "job_count"]
+# 
+# fig = px.choropleth_map(
+#     canton_counts,
+#     geojson=swiss_geo,
+#     locations="canton_code",
+#     featureidkey="properties.id",
+#     color="job_count",
+#     color_continuous_scale="Blues",
+#     zoom=6.5,
+#     center={"lat": 46.8, "lon": 8.3},
+#     opacity=0.6,
+#     labels={"job_count": "Number of Listings", "canton_code": "Canton"},
+# )
+# fig.update_layout(margin={"r": 0, "t": 0, "l": 0, "b": 0})
+# fig.show()
+```
+
+### Jobs by Occupation Field and Organization Type
+
+```{python}
+#| eval: false
+#| label: fig-jobs-by-field
+#| fig-cap: "Job listings by occupation field and organization type"
+
+# #ToDo: Implement stacked/grouped bar chart
+# cross_tab = pd.crosstab(df_filtered["occupation_field"], df_filtered["org_type"])
+# 
+# fig = px.bar(
+#     cross_tab.reset_index().melt(id_vars="occupation_field"),
+#     x="occupation_field",
+#     y="value",
+#     color="org_type",
+#     labels={"value": "Number of Listings", "occupation_field": "Occupation Field", "org_type": "Organization Type"},
+# )
+# fig.update_layout(xaxis_tickangle=-45)
+# fig.show()
+```
+
+## RQ2: Workload Flexibility and Comparison with BFS SAKE Statistics
+
+Which public sector branches and regions offer the highest flexibility (part-time vs. full-time roles), and how do these advertised workloads compare to official BFS employment statistics?
+
+### Workload Distribution by Occupation Field
+
+::: {.callout-important}
+## #ToDo: Implement RQ2 Visualizations
+Create the following visualizations:
+
+1. **Box plot** of FTE ranges (`fte_from`, `fte_to`) by occupation field.
+2. **Stacked bar chart** of Vollzeit vs. Teilzeit share per canton.
+3. **Comparison chart** of scraped workload distribution vs. BFS SAKE official statistics (requires BFS data integration from section 2.5.1).
+
+Key analysis points:
+- Which fields/regions offer the most part-time flexibility?
+- How does the publicjobs.ch workload profile differ from the BFS SAKE baseline?
+:::
+
+```{python}
+#| eval: false
+#| label: fig-workload-distribution
+#| fig-cap: "FTE workload distribution by occupation field"
+
+# #ToDo: Implement workload analysis
+# fig = px.box(
+#     df_filtered.dropna(subset=["fte_from", "fte_to"]),
+#     x="occupation_field",
+#     y="fte_to",
+#     color="work_time",
+#     labels={"fte_to": "FTE (upper bound)", "occupation_field": "Occupation Field"},
+# )
+# fig.update_layout(xaxis_tickangle=-45)
+# fig.show()
+```
+
+```{python}
+#| eval: false
+#| label: fig-workload-by-canton
+#| fig-cap: "Part-time vs. full-time share by canton"
+
+# #ToDo: Implement canton-level workload comparison
+# workload_by_canton = pd.crosstab(
+#     df_filtered["canton_code"],
+#     df_filtered["work_time"],
+#     normalize="index"
+# ).reset_index()
+# 
+# # #ToDo: Add BFS SAKE comparison overlay
+```
+
+## RQ3: Benefits and Attractiveness
+
+Which fringe benefits (e.g., Home Office, public transport contributions, central location) are most frequently used to attract talent in the public sector, and do these vary by canton or workload?
+
+::: {.callout-important}
+## #ToDo: Implement RQ3 Analysis
+Benefit tags are already extracted from the overview cards (section 2.4) and encoded as dummy variables. Implement the following visualizations:
+
+1. **Frequency chart** of top N most common benefits.
+2. **Heatmap** of benefit occurrence by canton or occupation field.
+3. **Correlation analysis** between offered benefits and workload flexibility (e.g., do part-time roles offer more Home Office?).
+:::
+
+```{python}
+#| eval: false
+#| label: fig-benefits-frequency
+#| fig-cap: "Most frequently offered fringe benefits in public sector job listings"
+
+# #ToDo: Implement using the benefit dummy columns from section 2.4
+# Example:
+# benefit_cols = [c for c in df_with_benefits.columns if c.startswith("benefit_")]
+# benefit_counts = df_with_benefits[benefit_cols].sum().sort_values(ascending=False)
+# 
+# fig = px.bar(
+#     x=benefit_counts.head(15).values,
+#     y=benefit_counts.head(15).index.str.replace("benefit_", ""),
+#     orientation="h",
+#     labels={"x": "Number of Listings", "y": "Benefit"},
+# )
+# fig.update_layout(yaxis=dict(autorange="reversed"))
+# fig.show()
+```
+
+# Results and Discussion
+
+::: {.callout-important}
+## #ToDo: Write Results and Discussion
+Summarize the key findings from all three research questions:
+
+- **RQ1**: Describe the geographic distribution patterns. Which cantons/regions show the highest demand? Which organization types dominate?
+- **RQ2**: Compare workload flexibility across sectors and regions. How does the publicjobs.ch profile deviate from BFS SAKE baseline?
+- **RQ3**: Identify the most common benefits and discuss regional/sectoral variation.
+
+Reference all figures and tables using Quarto cross-references (e.g., `@fig-jobs-per-canton`).
+:::
+
+
+# Limitations and Future Work
+
+::: {.callout-important}
+## #ToDo: Write Limitations and Future Work
+Address at least:
+
+- **Cross-sectional snapshot**: publicjobs.ch only shows active listings; no historical trend analysis possible without repeated scraping.
+- **Single source bias**: publicjobs.ch covers mainly public sector; comparison with private sector platforms (e.g., jobs.ch) would add perspective.
+- **Benefit extraction**: If detail page scraping is incomplete, acknowledge this limitation.
+- **Canton inference from URL**: Canton is parsed from the URL slug, which may not always match the actual location of the position.
+- **BFS mapping challenges**: Manual mapping from publicjobs categories to ISCO-08 involves subjective judgment.
+- **Potential extensions**: Time series analysis via periodic re-scraping, NLP on job descriptions, salary prediction models.
+:::
+
+
+# Appendix: Use of GenAI
+
+::: {.callout-important}
+## #ToDo: Document GenAI Usage
+Describe how and where generative AI tools were used during the project (as required by the CIP project description). Cover:
+
+- Which tools were used (e.g., Claude, ChatGPT)?
+- For which tasks (code debugging, text polishing, translation, etc.)?
+- How outputs were verified and validated.
+- Limitations observed.
+:::
