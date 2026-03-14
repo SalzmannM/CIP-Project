@@ -38,7 +38,7 @@ CIP_FS2026_106/
 
 ```bash
 # 1. Clone the repository
-git clone <repo-url>
+git clone <https://github.com/SalzmannM/CIP-Project.git>
 cd CIP_FS2026_106
 
 # 2. Create virtual environment
@@ -50,7 +50,7 @@ python -m venv .venv
 # 4. Install dependencies
 pip install -r requirements.txt
 
-# 5. Run scraper cells in the QMD (sections 2.3 and 2.4)
+# 5. Run scraper cells in the QMD (sections 2.3 and 2.4) (ONLY REQUIRED IF data is empty)
 #    → produces data/publicjobs_raw.json and data/publicjobs_benefits.json
 
 # 6. Render the Quarto document
