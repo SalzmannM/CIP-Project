@@ -50,10 +50,6 @@ desktop.ini
 # ============================================
 # Data (tracked via .gitkeep, not the files)
 # ============================================
-data/*.json
-data/*.csv
-data/*.xlsx
-data/*.xls
 !data/.gitkeep
 
 # ============================================
