@@ -1,0 +1,21 @@
+/* Custom styles for CIP Project Group 106 */
+/* Quarto HTML output — public_jobs_analysis.qmd */
+
+/* Slightly tighter code blocks */
+pre.sourceCode {
+    font-size: 0.85em;
+}
+
+/* Callout boxes */
+.callout-important {
+    border-left-color: #dc3545 !important;
+}
+
+.callout-note {
+    border-left-color: #0d6efd !important;
+}
+
+/* Tables */
+table {
+    font-size: 0.9em;
+}

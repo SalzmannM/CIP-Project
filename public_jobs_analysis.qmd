@@ -1,0 +1,1019 @@
+---
+title: "Swiss Public Sector Job Market Analysis"
+subtitle: "Analysis - CIP Project Group 106"
+author: ["Alina Caspar", "Andrin Lehmann", "Maurice Salzmann"]
+number-sections: true
+number-depth: 2
+toc: true
+toc-depth: 2
+format:
+  pdf:
+    callout-numbered: true
+    geometry:
+      - left=1.5cm
+      - right=1.5cm
+      - top=1.8cm
+      - bottom=1.8cm
+    fontsize: 10pt
+
+execute:
+  echo: false
+  warning: false
+  message: false
+  cache: false
+jupyter: python3
+  
+editor_options:
+  chunk_output_type: console
+---
+
+# Introduction
+
+The Swiss public sector employs a significant share of the national workforce, yet structured, open data on its job market is scarce. This project addresses that gap by scraping and analyzing all active listings on publicjobs.ch - Switzerland's primary public-sector job platform - as of March 2026. Three research questions guide the analysis: (RQ1) how labor demand distributes across Swiss regions and organization types, (RQ2) whether structural factors statistically explain workload flexibility, and (RQ3) which fringe benefits dominate public-sector recruitment. Data were collected via automated dynamic web scraping (Selenium, BeautifulSoup), cleaned and transformed, and then analyzed using statistical methods including regression, hypothesis testing, and Bayesian inference.
+
+# Methods
+
+## Data Acquisition
+
+### Legal, Ethics, and Access
+
+All data on publicjobs.ch are publicly accessible without login. Prior to scraping, the site's *robots.txt* was reviewed: it permits crawling of `/jobs` listing and detail pages without restrictions. Because the site renders content dynamically via JavaScript and uses client-side pagination, a standard HTTP request-based approach was insufficient - Selenium with a Chrome driver was required to fully load each page before extraction. To minimize server load, randomized pauses of 2.5-4.5 seconds were inserted between page requests. No personal data (e.g., applicant profiles) are collected; all extracted fields are job-ad metadata published by the employer.
+
+### Dynamic Data Extraction with Selenium
+
+The overview scraper iterates over all 73 listing pages of publicjobs.ch and uses BeautifulSoup to parse each job card's HTML. For every listing, seven structured fields are extracted: job title, employer name, city, canton (inferred from the detail URL path), occupation field, organization type, and workload. Workload strings such as "80 - 100%" or "Vollzeit" are normalized into two numeric FTE boundary values (`fte_from`, `fte_to`) and a binary `work_time` label (Vollzeit / Teilzeit). A URL-based deduplication set prevents double-counting of listings that appear on multiple pages. The resulting dataset is exported as a JSON file for downstream processing.
+
+```{python}
+#| eval: false
+#| include: false
+
+# --- Scraper Configuration ---
+driver = webdriver.Chrome()
+base_url = "https://publicjobs.ch"
+
+# How many pages to scrape (73 pages available as of March 2026)
+max_pages = 73
+
+# Start on the jobs overview page
+driver.get(f"{base_url}/jobs")
+
+# Wait for initial page load
+time.sleep(5)
+
+# --- Close Cookie Banner ---
+try:
+    # Wait up to 5 seconds until cookie-banner decline button is clickable
+    decline_button = WebDriverWait(driver, 5).until(
+        EC.element_to_be_clickable((By.ID, "hs-eu-decline-button"))
+    )
+    decline_button.click()
+    print("cookie-banner declined")
+    
+    # Short break until cookie-banner animation completes
+    time.sleep(1.5) 
+except Exception:
+    print("did not find a cookie banner")
+
+# --- Main Scraping Loop ---
+jobs = []
+seen_urls = set()
+
+for page in range(1, max_pages + 1):
+
+    print(f"\n--- Page {page} ---")
+
+    # Polite pause: wait for jobs to load after page change
+    time.sleep(random.uniform(2.5, 4.5))
+
+    html = driver.page_source
+    soup = BeautifulSoup(html, "html.parser")
+
+    # Find all job cards on the page
+    # Each job is a <div class="molecule-business-advertisement ...">
+    articles = soup.find_all("div", class_="molecule-business-advertisement")
+
+    print(f"  Jobs on this page: {len(articles)}")
+
+    for article in articles:
+        try:
+
+            # --- Extract detail URL and title ---
+            # The first <a> tag contains href and title attributes
+            link_tag = article.find("a", href=True)
+
+            if not link_tag:
+                print("  No link found → skipping")
+                continue
+
+            detail_path = link_tag.get("href", "")
+            detail_url = base_url + detail_path
+            title = link_tag.get("title", "")
+
+            # Duplicate check via URL set
+            if detail_url in seen_urls:
+                continue
+            seen_urls.add(detail_url)
+
+            if not title:
+                # Fallback: extract title from h3 element
+                h3 = article.find("h3")
+                title = h3.get_text(strip=True) if h3 else None
+
+            # --- Extract company name ---
+            # Company is in <span class="...molecule-business-advertisement__owner">
+            company_tag = article.find(
+                "span", class_=lambda c: c and "molecule-business-advertisement__owner" in c
+            )
+            company = None
+            if company_tag:
+                val = company_tag.find("span", class_="molecule-typography-label__value")
+                company = val.get_text(strip=True) if val else None
+
+            # --- Extract structured fields via Font Awesome icon classes ---
+            # publicjobs uses FA icons to label each metadata field:
+            #   fa-calendar     → posting date
+            #   fa-briefcase    → occupation field (Berufsfeld)
+            #   fa-percent      → workload (Vollzeit / 50-70 / etc.)
+            #   fa-location-dot → city
+            #   fa-building     → organisation type (Branche)
+
+            posting_date = None
+            occupation_field = None
+            workload_raw = None
+            city = None
+            org_type = None
+
+            # Find all label spans that contain an icon
+            all_labels = article.find_all(
+                "span", 
+                class_=lambda c: c and "molecule-typography-label" in c and "non-selectable" in str(c)
+            )
+
+            for label in all_labels:
+                # Skip the company label (already extracted)
+                if "molecule-business-advertisement__owner" in str(label.get("class", [])):
+                    continue
+
+                # Find the icon inside this label
+                icon = label.find("i", class_=lambda c: c and "atom-icon-fontawesome" in c)
+                # Find the value span
+                value_span = label.find("span", class_="molecule-typography-label__value")
+
+                if not icon or not value_span:
+                    continue
+
+                icon_classes = " ".join(icon.get("class", []))
+                value = value_span.get_text(strip=True)
+
+                # Match icon class to field
+                if "fa-calendar" in icon_classes:
+                    posting_date = value
+                elif "fa-briefcase" in icon_classes:
+                    occupation_field = value
+                elif "fa-percent" in icon_classes:
+                    workload_raw = value
+                elif "fa-location-dot" in icon_classes:
+                    city = value
+                elif "fa-building" in icon_classes:
+                    org_type = value
+
+            # --- Parse workload string into FTE boundaries ---
+            fte_from = None
+            fte_to = None
+            work_time = None
+
+            if workload_raw:
+                if workload_raw.lower() == "vollzeit":
+                    work_time = "Vollzeit"
+                    fte_from = 1.0
+                    fte_to = 1.0
+                elif workload_raw.lower() == "teilzeit":
+                    work_time = "Teilzeit"
+                else:
+                    # Try to parse range: "50 - 70" or "80 - 100"
+                    range_match = re.search(r"(\d{1,3})\s*[-–]\s*(\d{1,3})", workload_raw)
+                    if range_match:
+                        fte_from = float(range_match.group(1)) / 100
+                        fte_to = float(range_match.group(2)) / 100
+                        work_time = "Vollzeit" if fte_to >= 0.9 else "Teilzeit"
+                    else:
+                        # Single number: "100" or "60"
+                        single_match = re.search(r"(\d{1,3})", workload_raw)
+                        if single_match:
+                            pct = float(single_match.group(1))
+                            if pct <= 100:
+                                fte_from = pct / 100
+                                fte_to = pct / 100
+                                work_time = "Vollzeit" if pct >= 90 else "Teilzeit"
+
+            # --- Extract canton from URL path ---
+            # URL format: /jobs/zurich/medizin-arzte-pflege/133688-...
+            # The second path segment corresponds to the canton
+            canton = None
+            url_parts = detail_path.strip("/").split("/")
+            if len(url_parts) >= 2:
+                canton = url_parts[1]  # e.g. "zurich", "bern", "glarus"
+
+            print(f"  ✓ {title[:60]:60s} | {company or 'N/A':25s} | {city or 'N/A'}")
+
+            # Consolidate extracted data into dictionary
+            job_data = {
+                "title": title,
+                "company": company,
+                "city": city,
+                "canton": canton,
+                "posting_date": posting_date,
+                "occupation_field": occupation_field,
+                "org_type": org_type,
+                "workload_raw": workload_raw,
+                "fte_from": fte_from,
+                "fte_to": fte_to,
+                "work_time": work_time,
+                "detail_url": detail_url,
+            }
+
+            jobs.append(job_data)
+
+        except Exception as e:
+            print(f"  Skipping job due to error: {e}")
+            continue
+
+    print(f"  Total so far: {len(jobs)}")
+
+    # --- Pagination: click "Nächste Seite" button ---
+    if page >= max_pages:
+        break
+
+    try:
+        # Find the "Nächste Seite" (next page) button
+        next_button = driver.find_element(
+            By.CSS_SELECTOR, 'button[aria-label="Nächste Seite"]'
+        )
+
+        # Check if button is disabled (last page reached)
+        is_disabled = next_button.get_attribute("aria-disabled")
+        if is_disabled == "true":
+            print("  Last page reached: stopping")
+            break
+
+        # Scroll to button so it's visible
+        driver.execute_script("arguments[0].scrollIntoView(true);", next_button)
+        time.sleep(0.5)
+
+        # Click via JavaScript to avoid click-interception by overlays
+        driver.execute_script("arguments[0].click();", next_button)
+
+    except Exception as e:
+        print(f"  Pagination error: {e} → stopping")
+        break
+
+
+print(f"\n=== Total Jobs scraped: {len(jobs)} ===")
+
+# --- Create DataFrame and export as JSON ---
+df = pd.DataFrame(jobs)
+
+print(f"\nColumns: {list(df.columns)}")
+print(f"Shape: {df.shape}")
+
+# Export to JSON (preferred over CSV for encoding safety and null handling)
+df.to_json(path_df_jobs_raw, orient="records", indent=2, force_ascii=False)
+print(f"\nExported raw data to: {path_df_jobs_raw}")
+
+# Close browser
+driver.quit()
+print("Browser closed")
+```
+
+### Detail Page Scraping: Benefit Extraction
+
+Fringe benefit information is not visible on the listing overview pages - it is only accessible on each job's individual detail page. A second scraper therefore visits all ~1'460 detail URLs collected in the previous step. To reduce total runtime, five headless Chrome instances run in parallel via `ThreadPoolExecutor`, each operating its own browser session. Benefit tags (e.g., "Home-Office", "Öffentlicher Verkehr") are extracted from a dedicated footer container on each detail page. Results are saved incrementally to a checkpoint file every 50 entries, allowing the scraper to resume after an interruption without re-visiting already-processed URLs.
+
+```{python}
+#| eval: false
+#| include: false
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+
+# --- Detail Page Scraper: Benefits (Parallel) ---
+# This script visits each job's detail_url to extract benefit tags.
+# It requires the overview scrape (path_df_jobs_raw) to be completed first.
+
+# Configuration
+n_workers = 5                # number of parallel browser instances
+pause_between = (1.5, 3.0)   # random pause range (seconds) between requests per worker
+checkpoint_every = 50        # save checkpoint every N results (across all workers)
+
+# Thread-safe lock for writing results
+lock = threading.Lock()
+
+
+def create_headless_chrome():
+    """Creates a headless Chrome WebDriver instance."""
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    return webdriver.Chrome(options=options)
+
+
+def scrape_benefits_from_url(url):
+    """
+    Opens a detail page in a thread-local browser and extracts benefit tags.
+
+    Args:
+        url: detail page URL
+
+    Returns:
+        dict with detail_url and list of benefit strings
+    """
+    # Each thread gets its own browser (stored in thread-local storage)
+    if not hasattr(thread_local, "driver"):
+        thread_local.driver = create_headless_chrome()
+
+    driver = thread_local.driver
+
+    try:
+        driver.get(url)
+        time.sleep(random.uniform(*pause_between))
+
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+
+        # Find the benefits container in the detail page footer
+        benefits_container = soup.find(
+            "div",
+            class_=lambda c: c and "organism-business-jobs-detail__footer-benefits" in c
+        )
+
+        benefits = []
+        if benefits_container:
+            # Each benefit is a <button class="molecule-action-tag ...">
+            # with text inside <span class="molecule-typography-label__value">
+            benefit_buttons = benefits_container.find_all(
+                "button",
+                class_=lambda c: c and "molecule-action-tag" in c
+            )
+            for btn in benefit_buttons:
+                value_span = btn.find(
+                    "span", class_="molecule-typography-label__value"
+                )
+                if value_span:
+                    text = value_span.get_text(strip=True)
+                    if text:
+                        benefits.append(text)
+
+        return {"detail_url": url, "benefits": benefits}
+
+    except Exception as e:
+        print(f"\n  Failed {url}: {e}")
+        return {"detail_url": url, "benefits": []}
+
+
+# --- Main execution ---
+
+# Thread-local storage for browser instances (one per worker thread)
+thread_local = threading.local()
+
+if not os.path.exists(path_df_jobs_raw):
+    print("Raw data not found - run the overview scraper (section 2.3) first.")
+else:
+    df_overview = pd.read_json(path_df_jobs_raw)
+    all_urls = df_overview["detail_url"].tolist()
+    total_nr = len(all_urls)
+    print(f"Total detail URLs: {total_nr}")
+
+    # Check for existing checkpoint (resume support)
+    if os.path.exists(path_df_jobs_benefits):
+        df_existing = pd.read_json(path_df_jobs_benefits)
+        scraped_urls = set(df_existing["detail_url"].dropna())
+        remaining_urls = [u for u in all_urls if u not in scraped_urls]
+        print(f"Resuming - already scraped: {len(scraped_urls)}, remaining: {len(remaining_urls)}")
+    else:
+        df_existing = pd.DataFrame(columns=["detail_url", "benefits"])
+        remaining_urls = all_urls
+        print("Starting fresh - no checkpoint found.")
+
+    # Collect results
+    all_results = list(df_existing.to_dict("records"))
+    completed = len(all_results)
+
+    print(f"Starting {n_workers} parallel workers for {len(remaining_urls)} URLs...")
+
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        # Submit all remaining URLs
+        future_to_url = {
+            executor.submit(scrape_benefits_from_url, url): url
+            for url in remaining_urls
+        }
+
+        for future in as_completed(future_to_url):
+            result = future.result()
+            all_results.append(result)
+            completed += 1
+
+            # Progress
+            pct = (completed / total_nr) * 100
+            sys.stdout.write(f"\rCompleted {completed}/{total_nr} ({pct:.1f}%)")
+            sys.stdout.flush()
+
+            # Periodic checkpoint save
+            if completed % checkpoint_every == 0:
+                with lock:
+                    pd.DataFrame(all_results).to_json(
+                        path_df_jobs_benefits,
+                        orient="records", indent=2, force_ascii=False
+                    )
+
+    # Final save
+    df_all_benefits = pd.DataFrame(all_results)
+    df_all_benefits.to_json(
+        path_df_jobs_benefits,
+        orient="records", indent=2, force_ascii=False
+    )
+
+    # Clean up: close all thread-local browsers
+    # (ThreadPoolExecutor doesn't expose thread locals directly,
+    #  but browsers will be garbage-collected when the script ends)
+
+    print(f"\n\nDetail scraping complete: {len(df_all_benefits)}/{total_nr}")
+    print(f"Saved to: {path_df_jobs_benefits}")
+```
+
+After detail-page scraping completes, the benefit data is joined to the overview dataset via `detail_url` as the merge key. Each benefit tag is then one-hot encoded into a binary dummy column (prefix `benefit_`), producing one column per unique benefit type. This wide-format representation allows straightforward frequency counts, correlation analysis, and use as predictors in regression models.
+
+```{python}
+#| eval: false
+#| include: false
+
+# --- Merge benefits into main dataset and create dummy variables ---
+if os.path.exists(path_df_jobs_benefits) and os.path.exists(path_df_jobs_raw):
+    df_overview = pd.read_json(path_df_jobs_raw)
+    df_benefits = pd.read_json(path_df_jobs_benefits)
+
+    # Merge on detail_url
+    df_merged = df_overview.merge(df_benefits, on="detail_url", how="left")
+
+    # Fill missing benefits with empty lists
+    df_merged["benefits"] = df_merged["benefits"].apply(
+        lambda x: x if isinstance(x, list) else []
+    )
+
+    # Inspect the most common benefit tags
+    all_benefits = df_merged["benefits"].explode().dropna()
+    print("--- Top 20 most frequent benefit tags ---")
+    print(all_benefits.value_counts().head(20))
+
+    # One-hot encode benefits into dummy columns
+    df_benefits_dummies = (
+        df_merged["benefits"]
+        .apply(lambda x: pd.Series({b: 1 for b in x}) if x else pd.Series(dtype=int))
+        .fillna(0)
+        .astype(int)
+    )
+    df_benefits_dummies = df_benefits_dummies.add_prefix("benefit_")
+
+    # Concatenate dummies to main DataFrame
+    df_with_benefits = pd.concat([df_merged, df_benefits_dummies], axis=1)
+
+    print(f"\nBenefit dummy columns added: {len(df_benefits_dummies.columns)}")
+    print(f"Sample columns: {list(df_benefits_dummies.columns[:10])}")
+else:
+    print("Run both the overview scraper and the detail scraper first to generate the required data files.")
+```
+
+### Disclaimer on Data Scope
+
+The dataset covers all ~1'460 active listings on publicjobs.ch as of March 2026 (73 pages × 20 listings per page). It represents a single cross-sectional snapshot of public-sector demand at one point in time; temporal trends cannot be derived without repeated scraping. The platform exclusively lists public-sector positions, so findings do not generalize to the private labor market.
+
+## Data Transformation and Cleansing
+
+The raw scraped dataset requires several preparation steps before analysis. Although web-scraped data from a structured platform tends to be relatively clean compared to manual or survey data, real-world issues such as missing fields, inconsistent string formats, and out-of-range values are expected and must be addressed systematically. The steps below follow the mandatory cleansing requirements defined in the project description.
+
+::: {.callout-note}
+## Note on Data Quality Requirements
+API-, scraped- or simulated data are often already "quite clean". Since in most real-world scenarios we are far from that situation, we would like to highlight the importance of this part. You need to be able to handle poor data quality. For this reason, we expect you to address the following list of **mandatory transformation / cleansing steps**, also if some are not directly meaningful in your context:
+
+- Check for gaps / missing data
+- Check if columns show appropriate datatypes, change if needed
+- Check if values lie in the expected range
+- Identify outliers, treat them reasonably
+- Format your dataset suitable for your task (combine, merge, resample, …)
+- Enrich your dataset with at least one column of helpful additional information
+:::
+
+### Load Raw Dataset and Check for Gaps / Missing Data
+
+```{python}
+#| eval: false
+
+# Load raw scraped data
+if os.path.exists(path_df_jobs_raw):
+    df_raw = pd.read_json(path_df_jobs_raw)
+    print(f"Raw dataset loaded: {df_raw.shape[0]} rows, {df_raw.shape[1]} columns")
+else:
+    print("Raw data not found! Run the scraper first.")
+
+# Check for missing values per column
+print("\n--- Missing values per column ---")
+print(df_raw.isnull().sum())
+print(f"\n--- Percentage missing ---")
+print((df_raw.isnull().sum() / len(df_raw) * 100).round(1))
+```
+
+::: {.callout-important}
+## #ToDo: Discuss Missing Data Strategy
+After inspecting the missing value patterns, document the decision on how to handle gaps:
+
+- Which columns have acceptable missingness (e.g., `posting_date` might be missing for some listings)?
+- Should rows with missing `occupation_field` or `canton` be dropped or imputed?
+- Use a conservative approach (drop NAs) or targeted imputation where possible?
+:::
+
+### Ensure Appropriate Column Datatypes
+
+All scraped values initially arrive as strings or mixed types. Posting dates are parsed to `datetime` using the DD.MM.YYYY format used by publicjobs.ch. FTE columns (`fte_from`, `fte_to`) are cast to `float`. High-cardinality nominal columns (canton, occupation field, organization type, work_time) are cast to the `category` dtype to reduce memory footprint and enable efficient grouping operations in subsequent analysis steps.
+
+```{python}
+#| eval: false
+
+df_cleaned = df_raw.copy()
+
+# Convert posting_date to datetime
+# publicjobs.ch uses format like "12.03.2026" (DD.MM.YYYY)
+df_cleaned["posting_date"] = pd.to_datetime(
+    df_cleaned["posting_date"], format="%d.%m.%Y", errors="coerce"
+)
+
+# Convert FTE columns to float
+df_cleaned["fte_from"] = pd.to_numeric(df_cleaned["fte_from"], errors="coerce")
+df_cleaned["fte_to"] = pd.to_numeric(df_cleaned["fte_to"], errors="coerce")
+
+# Convert categorical columns
+df_cleaned["work_time"] = df_cleaned["work_time"].astype("category")
+df_cleaned["canton"] = df_cleaned["canton"].astype("category")
+df_cleaned["occupation_field"] = df_cleaned["occupation_field"].astype("category")
+df_cleaned["org_type"] = df_cleaned["org_type"].astype("category")
+
+# Verify dtypes
+print(df_cleaned.dtypes)
+```
+
+### Summary Statistics of Key Variables
+
+Before applying any filtering, the key variable distributions are inspected to understand the data. Summary statistics for the FTE columns reveal the central tendency and spread of workload offers. Value counts for canton, occupation field, organization type, and employer highlight which categories dominate the dataset and whether any unexpected values are present - both of which inform subsequent filtering decisions.
+
+```{python}
+#| eval: false
+
+# Overview of numerical columns
+print("--- FTE Distribution ---")
+print(df_cleaned[["fte_from", "fte_to"]].describe().round(2))
+
+# Overview of categorical columns
+print("\n--- Jobs per Canton (top 15) ---")
+print(df_cleaned["canton"].value_counts().head(15))
+
+print("\n--- Jobs per Occupation Field ---")
+print(df_cleaned["occupation_field"].value_counts().head(15))
+
+print("\n--- Jobs per Organization Type ---")
+print(df_cleaned["org_type"].value_counts().head(15))
+
+print("\n--- Workload Distribution ---")
+print(df_cleaned["work_time"].value_counts())
+
+print("\n--- Top Employers ---")
+print(df_cleaned["company"].value_counts().head(15))
+```
+
+### Check Values in Expected Ranges
+
+FTE values must fall within [0, 1] since they represent fractions of full-time employment. Any value outside this range indicates a parsing error in the workload string and should be flagged or excluded. Canton slugs extracted from URLs are cross-checked against the 26 known Swiss canton identifiers; unexpected values may indicate non-standard location entries (e.g., cross-canton postings) that require manual inspection.
+
+```{python}
+#| eval: false
+
+# FTE values should be between 0 and 1
+print("FTE range check:")
+print(f"  fte_from: min={df_cleaned['fte_from'].min()}, max={df_cleaned['fte_from'].max()}")
+print(f"  fte_to:   min={df_cleaned['fte_to'].min()}, max={df_cleaned['fte_to'].max()}")
+
+# Check for any FTE values outside [0, 1]
+invalid_fte = df_cleaned[
+    (df_cleaned["fte_from"] < 0) | (df_cleaned["fte_from"] > 1) |
+    (df_cleaned["fte_to"] < 0) | (df_cleaned["fte_to"] > 1)
+]
+print(f"\nRows with invalid FTE values: {len(invalid_fte)}")
+
+# Check canton values against known Swiss cantons
+known_cantons = [
+    "zurich", "bern", "luzern", "uri", "schwyz", "obwalden", "nidwalden",
+    "glarus", "zug", "freiburg", "solothurn", "basel-stadt", "basel-landschaft",
+    "schaffhausen", "appenzell-ausserrhoden", "appenzell-innerrhoden",
+    "st-gallen", "graubuenden", "aargau", "thurgau", "tessin", "waadt",
+    "wallis", "neuenburg", "genf", "jura"
+]
+# #ToDo: Verify the exact canton slug format used in publicjobs.ch URLs
+# and adjust the known_cantons list accordingly
+unknown_cantons = df_cleaned[~df_cleaned["canton"].isin(known_cantons)]["canton"].unique()
+print(f"\nUnknown canton slugs: {unknown_cantons}")
+```
+
+### Outlier Identification and Filtering
+
+::: {.callout-important}
+## #ToDo: Define and Implement Outlier Filtering
+After inspecting the summary statistics, define filtering rules:
+
+- Remove duplicate listings (already handled during scraping via `seen_urls`, but verify).
+- Remove rows with missing critical fields (`title`, `occupation_field`, `canton`).
+- Remove any jobs with clearly invalid FTE values.
+- Document the number of rows removed at each step.
+:::
+
+```{python}
+#| eval: false
+
+# #ToDo: Implement filtering pipeline
+# Example structure:
+# print(f"Before filtering: {len(df_cleaned)} rows")
+
+# # Remove rows with missing critical fields
+# df_filtered = df_cleaned.dropna(subset=["title", "occupation_field", "canton"])
+# print(f"After dropping missing critical fields: {len(df_filtered)} rows")
+
+# # Remove invalid FTE ranges
+# df_filtered = df_filtered[
+#     (df_filtered["fte_from"].isna()) |
+#     ((df_filtered["fte_from"] >= 0) & (df_filtered["fte_from"] <= 1))
+# ]
+# print(f"After FTE validation: {len(df_filtered)} rows")
+```
+
+### Canton Name Normalization and Mapping
+
+Canton identifiers in the raw data are URL slugs derived from the publicjobs.ch URL structure (e.g., "zurich", "graubuenden", "st-gallen"). These are mapped to official ISO 3166-2:CH two-letter canton codes (e.g., ZH, GR, SG) required by standard Swiss GeoJSON files for choropleth mapping. This step also serves as an additional validation layer: any slug that cannot be mapped signals an unexpected value worth investigating.
+
+```{python}
+#| eval: false
+
+# Mapping from publicjobs.ch URL slugs to official canton abbreviations
+canton_mapping = {
+    "zurich": "ZH", "bern": "BE", "luzern": "LU", "uri": "UR",
+    "schwyz": "SZ", "obwalden": "OW", "nidwalden": "NW", "glarus": "GL",
+    "zug": "ZG", "freiburg": "FR", "solothurn": "SO", "basel-stadt": "BS",
+    "basel-landschaft": "BL", "schaffhausen": "SH",
+    "appenzell-ausserrhoden": "AR", "appenzell-innerrhoden": "AI",
+    "st-gallen": "SG", "graubuenden": "GR", "aargau": "AG",
+    "thurgau": "TG", "tessin": "TI", "waadt": "VD",
+    "wallis": "VS", "neuenburg": "NE", "genf": "GE", "jura": "JU",
+}
+# #ToDo: Verify all canton slug values that actually appear in scraped data
+# and adjust mapping accordingly (e.g., check if "graubünden" vs "graubuenden")
+
+# df_filtered["canton_code"] = df_filtered["canton"].map(canton_mapping)
+# unmapped = df_filtered[df_filtered["canton_code"].isna()]["canton"].unique()
+# print(f"Unmapped cantons: {unmapped}")
+```
+
+### Save Cleaned Dataset
+
+```{python}
+#| eval: false
+
+# #ToDo: Uncomment after cleaning pipeline is finalized
+# df_filtered.to_json(
+#     path_df_jobs_cleaned,
+#     orient="records",
+#     indent=2,
+#     force_ascii=False
+# )
+# print(f"Cleaned dataset saved: {len(df_filtered)} rows → {path_df_jobs_cleaned}")
+```
+
+
+# Results and Discussion
+
+The cleaned dataset is used to address the three research questions defined at the outset. RQ1 characterizes the geographic and sectoral distribution of public-sector job postings. RQ2 applies statistical tests to determine whether workload flexibility (Vollzeit vs. Teilzeit) is systematically associated with structural factors such as occupation field or organization type. RQ3 profiles the fringe benefit landscape to reveal which offerings are most prevalent and whether they correlate with workload or regional differences. Each subsection below presents the implemented analysis, the resulting visualizations, and a discussion of the findings.
+
+## RQ1: Geographic Distribution of Public Sector Labor Demand
+
+**Research question:** How does the current demand for public sector labour distribute across specific Swiss regions and organization types (e.g., healthcare vs. administration)?
+
+Understanding geographic concentration helps identify where public-sector employment is most active and whether urban cantons disproportionately drive demand. The cross-tabulation of canton and occupation field further reveals whether certain professions cluster in specific regions.
+
+### Jobs by Canton
+
+::: {.callout-important}
+## #ToDo: Implement RQ1 Visualizations
+Create the following visualizations:
+
+1. **Choropleth map** of Switzerland showing job count per canton (use `plotly.express.choropleth_map` with Swiss cantons GeoJSON).
+2. **Bar chart** of jobs per occupation field, segmented by organization type.
+3. **Heatmap** showing the cross-tabulation of canton × occupation field.
+
+Use the canton codes mapped in the cleaning step. Load the Swiss cantons GeoJSON from a public source (e.g., GitHub).
+:::
+
+```{python}
+#| eval: false
+#| label: fig-jobs-per-canton
+#| fig-cap: "Geographic distribution of public sector job listings across Swiss cantons"
+
+# #ToDo: Implement choropleth map
+# import urllib.request
+# 
+# geojson_url = "https://raw.githubusercontent.com/empet/Datasets/master/swiss-cantons.geojson"
+# with urllib.request.urlopen(geojson_url) as url:
+#     swiss_geo = json.loads(url.read().decode())
+# 
+# # Count jobs per canton
+# canton_counts = df_filtered["canton_code"].value_counts().reset_index()
+# canton_counts.columns = ["canton_code", "job_count"]
+# 
+# fig = px.choropleth_map(
+#     canton_counts,
+#     geojson=swiss_geo,
+#     locations="canton_code",
+#     featureidkey="properties.id",
+#     color="job_count",
+#     color_continuous_scale="Blues",
+#     zoom=6.5,
+#     center={"lat": 46.8, "lon": 8.3},
+#     opacity=0.6,
+#     labels={"job_count": "Number of Listings", "canton_code": "Canton"},
+# )
+# fig.update_layout(margin={"r": 0, "t": 0, "l": 0, "b": 0})
+# fig.show()
+```
+
+### Jobs by Occupation Field and Organization Type
+
+```{python}
+#| eval: false
+#| label: fig-jobs-by-field
+#| fig-cap: "Job listings by occupation field and organization type"
+
+# #ToDo: Implement stacked/grouped bar chart
+# cross_tab = pd.crosstab(df_filtered["occupation_field"], df_filtered["org_type"])
+# 
+# fig = px.bar(
+#     cross_tab.reset_index().melt(id_vars="occupation_field"),
+#     x="occupation_field",
+#     y="value",
+#     color="org_type",
+#     labels={"value": "Number of Listings", "occupation_field": "Occupation Field", "org_type": "Organization Type"},
+# )
+# fig.update_layout(xaxis_tickangle=-45)
+# fig.show()
+```
+
+## RQ2: Statistical Analysis of Workload Flexibility
+
+**Research question:** Are there statistically significant associations between workload flexibility (Vollzeit vs. Teilzeit) and structural factors such as canton, occupation field, or organization type in the Swiss public sector job market?
+
+Workload flexibility is increasingly relevant for talent attraction. This section tests whether the probability or level of part-time employment can be explained by job or employer characteristics, using a combination of regression models, group comparison tests, and Bayesian inference.
+
+### Statistical Tests
+
+::: {.callout-important}
+## #ToDo: Implement RQ2 Statistical Tests
+The following list contains **ideas and possible approaches** for the statistical analysis - not all of them need to be implemented. Select the analyses that best fit the data and the research question after the cleaning pipeline is finalized.
+
+**Prerequisite - Check for Normality:** Before choosing between parametric and non-parametric tests, verify whether `fte_to` is approximately normally distributed using a QQ-plot. This determines whether to use the t-test or the Wilcoxon test in step 4.
+
+1. **Pearson Correlation**: Compute the correlation coefficient *r* between `fte_to` (continuous workload) and the number of benefits offered per job listing. Report *r* and R² and interpret direction and strength. H₀: there is no linear association between FTE and benefit count.
+
+2. **Simple Linear Regression**: Fit a simple linear model `lm(fte_to ~ benefit_count)` to quantify whether jobs with more benefits systematically offer higher or lower FTE. Report the regression coefficient, p-value, and R².
+
+3. **Multiple Linear Regression with F-Test**: Fit a multiple regression model `lm(fte_to ~ occupation_field + org_type)` to test whether structural factors jointly predict workload level. Report the F-test statistic, overall model p-value, individual coefficients, and R². Interpret each coefficient conditionally (all other variables held constant).
+
+4. **Two-Sample t-Test or Wilcoxon Rank-Sum Test**: Compare the FTE distributions of two specific organization types (e.g., Spitäler vs. Gemeinden). If the QQ-plot confirms approximate normality, use the two-sample t-test. Otherwise use the non-parametric Wilcoxon rank-sum test (assumes symmetric distribution). Report the test statistic and p-value. H₀: the two groups have the same FTE distribution.
+
+5. **Bayesian Analysis with HDI and ROPE**: For a selected group comparison (e.g., Teilzeit proportion in Medizin vs. Informatik), estimate a Beta posterior analytically or via MCMC. Report the 95% HDI (Highest Density Interval) of the posterior difference. Define a ROPE around zero and assess what proportion of the posterior falls inside vs. outside the ROPE to evaluate practical significance beyond a binary p-value.
+
+6. **Logistic Regression / GLM Binomial**: Model `is_teilzeit ~ occupation_field + org_type + benefit_count` using a Binomial GLM. Report Odds Ratios (`exp(coefficients)`) with 95% confidence intervals for each predictor. Evaluate model quality using AIC (lower = better) and a ROC curve with AUC. Compare to a null model (intercept-only) to assess overall model fit.
+
+For each implemented test, report: null hypothesis, test statistic / posterior summary, p-value / Odds Ratio / HDI, and a brief interpretation.
+:::
+
+```{python}
+#| eval: false
+#| label: fig-qqplot-fte
+#| fig-cap: "QQ-Plot: Normality check for fte_to"
+
+# #ToDo: Check normality of fte_to before choosing t-test vs. Wilcoxon
+# import scipy.stats as stats
+# import matplotlib.pyplot as plt
+#
+# fig, ax = plt.subplots()
+# stats.probplot(df_filtered["fte_to"].dropna(), dist="norm", plot=ax)
+# ax.set_title("QQ-Plot: fte_to vs. Normal Distribution")
+# plt.tight_layout()
+# plt.show()
+# # If points lie approximately on the diagonal line → normality holds → use t-test
+# # If strong deviations → use Wilcoxon rank-sum test
+```
+
+```{python}
+#| eval: false
+#| label: tbl-correlation-fte-benefits
+#| tbl-cap: "Pearson correlation: FTE vs. benefit count"
+
+# #ToDo: Implement Pearson correlation
+# import numpy as np
+#
+# r = df_filtered["fte_to"].corr(df_filtered["benefit_count"])
+# r_squared = r ** 2
+# print(f"Pearson r = {r:.3f}, R² = {r_squared:.3f}")
+```
+
+```{python}
+#| eval: false
+#| label: tbl-simple-regression-fte-benefits
+#| tbl-cap: "Simple linear regression: fte_to ~ benefit_count (SW7)"
+
+# #ToDo: Implement simple linear regression
+# import statsmodels.formula.api as smf
+#
+# model = smf.ols("fte_to ~ benefit_count", data=df_filtered).fit()
+# print(model.summary())
+```
+
+```{python}
+#| eval: false
+#| label: tbl-multiple-regression-fte
+#| tbl-cap: "Multiple linear regression with F-test: fte_to ~ occupation_field + org_type (SW8)"
+
+# #ToDo: Implement multiple linear regression
+# import statsmodels.formula.api as smf
+#
+# model_multi = smf.ols("fte_to ~ C(occupation_field) + C(org_type)", data=df_filtered).fit()
+# print(model_multi.summary())
+# # Report F-statistic, overall p-value, R², and coefficient interpretation
+```
+
+```{python}
+#| eval: false
+#| label: tbl-wilcoxon-fte-orgtypes
+#| tbl-cap: "Two-sample t-test or Wilcoxon rank-sum test: FTE in Spitäler vs. Gemeinden"
+
+# #ToDo: Implement two-sample t-test OR Wilcoxon rank-sum test (depending on QQ-plot result)
+# from scipy.stats import ttest_ind, ranksums
+#
+# group_a = df_filtered[df_filtered["org_type"] == "Spital"]["fte_to"].dropna()
+# group_b = df_filtered[df_filtered["org_type"] == "Gemeinde"]["fte_to"].dropna()
+#
+# # Option A: Two-sample t-test (if QQ-plot confirms normality)
+# stat, p = ttest_ind(group_a, group_b)
+# print(f"t-test: t = {stat:.2f}, p = {p:.4f}")
+#
+# # Option B: Wilcoxon rank-sum test (if normality not confirmed)
+# stat, p = ranksums(group_a, group_b)
+# print(f"Wilcoxon W = {stat:.2f}, p = {p:.4f}")
+```
+
+```{python}
+#| eval: false
+#| label: tbl-bayesian-rope
+#| tbl-cap: "Bayesian analysis with HDI and ROPE: Teilzeit proportion Medizin vs. Informatik"
+
+# #ToDo: Implement Bayesian Beta posterior + ROPE
+# from scipy.stats import beta as beta_dist
+# import numpy as np
+#
+# # Count Teilzeit observations per group
+# grp_medizin = df_filtered[df_filtered["occupation_field"] == "Medizin / Ärzte / Pflege"]
+# grp_it      = df_filtered[df_filtered["occupation_field"] == "Informatik / IT"]
+#
+# z_m = (grp_medizin["work_time"] == "Teilzeit").sum()
+# n_m = len(grp_medizin)
+# z_it = (grp_it["work_time"] == "Teilzeit").sum()
+# n_it = len(grp_it)
+#
+# # Beta posterior: p(theta | z, N) = Beta(a + z, b + N - z), using flat prior a=b=1
+# a, b = 1, 1
+# post_m  = beta_dist(a + z_m,  b + n_m  - z_m)
+# post_it = beta_dist(a + z_it, b + n_it - z_it)
+#
+# # Sample from posteriors and compute difference
+# samples = post_m.rvs(10000) - post_it.rvs(10000)
+#
+# # ROPE: define practical equivalence as difference within [-0.05, 0.05]
+# rope_low, rope_high = -0.05, 0.05
+# pct_in_rope = np.mean((samples >= rope_low) & (samples <= rope_high))
+# print(f"Posterior mean difference: {samples.mean():.3f}")
+# print(f"95% credible interval: [{np.percentile(samples,2.5):.3f}, {np.percentile(samples,97.5):.3f}]")
+# print(f"Proportion of posterior in ROPE {rope_low}–{rope_high}: {pct_in_rope:.2%}")
+```
+
+```{python}
+#| eval: false
+#| label: tbl-logistic-regression
+#| tbl-cap: "Logistic Regression (GLM Binomial): predictors of Teilzeit"
+
+# #ToDo: Implement Logistic Regression / GLM Binomial
+# import statsmodels.formula.api as smf
+# import numpy as np
+# from sklearn.metrics import roc_auc_score, RocCurveDisplay
+# import matplotlib.pyplot as plt
+#
+# # Prepare binary outcome variable
+# df_model = df_filtered.copy()
+# df_model["is_teilzeit"] = (df_model["work_time"] == "Teilzeit").astype(int)
+# df_model = df_model.dropna(subset=["is_teilzeit", "occupation_field", "org_type", "benefit_count"])
+#
+# # Fit Binomial GLM (logistic regression)
+# model_logit = smf.logit(
+#     "is_teilzeit ~ C(occupation_field) + C(org_type) + benefit_count",
+#     data=df_model
+# ).fit()
+# print(model_logit.summary())
+#
+# # Odds Ratios: exp(coefficients)
+# odds_ratios = np.exp(model_logit.params)
+# conf_int_or = np.exp(model_logit.conf_int())
+# print("\n--- Odds Ratios with 95% CI ---")
+# print(pd.concat([odds_ratios, conf_int_or], axis=1).rename(
+#     columns={0: "OR", 1: "CI_low", 2: "CI_high"}))
+#
+# # AIC comparison to null model
+# model_null = smf.logit("is_teilzeit ~ 1", data=df_model).fit(disp=0)
+# print(f"\nAIC full model: {model_logit.aic:.1f}")
+# print(f"AIC null model: {model_null.aic:.1f}")
+#
+# # ROC curve and AUC
+# y_pred_prob = model_logit.predict(df_model)
+# auc = roc_auc_score(df_model["is_teilzeit"], y_pred_prob)
+# print(f"\nAUC: {auc:.3f}  (0.5 = random, 1.0 = perfect)")
+# RocCurveDisplay.from_predictions(df_model["is_teilzeit"], y_pred_prob)
+# plt.title("ROC Curve: Logistic Regression (Teilzeit prediction)")
+# plt.show()
+```
+
+## RQ3: Benefits and Attractiveness
+
+**Research question:** Which fringe benefits (e.g., Home Office, public transport contributions, central location) are most frequently used to attract talent in the public sector, and do these vary by canton or workload type?
+
+Fringe benefits are a key lever for employer attractiveness, particularly in a competitive labor market. Analyzing their frequency and distribution reveals whether public-sector employers systematically combine certain benefits with part-time offers or target specific regions with different benefit profiles.
+
+::: {.callout-important}
+## #ToDo: Implement RQ3 Analysis
+Benefit tags are extracted during scraping and encoded as binary dummy variables (one column per benefit type). Implement the following visualizations:
+
+1. **Frequency chart** of top N most common benefits.
+2. **Heatmap** of benefit occurrence by canton or occupation field.
+3. **Correlation analysis** between offered benefits and workload flexibility (e.g., do part-time roles offer more Home Office?).
+:::
+
+```{python}
+#| eval: false
+#| label: fig-benefits-frequency
+#| fig-cap: "Most frequently offered fringe benefits in public sector job listings"
+
+# #ToDo: Implement using the benefit dummy columns from section 2.4
+# Example:
+# benefit_cols = [c for c in df_with_benefits.columns if c.startswith("benefit_")]
+# benefit_counts = df_with_benefits[benefit_cols].sum().sort_values(ascending=False)
+# 
+# fig = px.bar(
+#     x=benefit_counts.head(15).values,
+#     y=benefit_counts.head(15).index.str.replace("benefit_", ""),
+#     orientation="h",
+#     labels={"x": "Number of Listings", "y": "Benefit"},
+# )
+# fig.update_layout(yaxis=dict(autorange="reversed"))
+# fig.show()
+```
+
+# Conclusion
+
+::: {.callout-important}
+## #ToDo: Write Conclusion
+Address the following points:
+
+- **Learnings**: What are the main take-aways from the three research questions? Which findings were surprising or particularly relevant?
+- **Limitations**: Discuss the key constraints of this study:
+  - Cross-sectional snapshot: no historical trend analysis possible without repeated scraping.
+  - Single source: publicjobs.ch covers mainly public sector; comparison with private platforms would add perspective.
+  - Canton inference from URL slug may not always reflect the actual job location.
+  - Benefit extraction completeness depends on successful detail page scraping.
+- **Future Steps / Outlook**: What could be done next?
+  - Periodic re-scraping to enable time-series analysis.
+  - NLP on job description texts for richer feature extraction.
+  - Cross-platform comparison (e.g., jobs.ch) for public vs. private sector benchmarking.
+:::
+
+
+# Appendix: Use of GenAI
+
+::: {.callout-important}
+## #ToDo: Document GenAI Usage
+Describe how and where generative AI tools were used during the project (as required by the CIP project description). Cover:
+
+- Which tools were used (e.g., Claude, ChatGPT)?
+- For which tasks (code debugging, text polishing, translation, etc.)?
+- How outputs were verified and validated.
+- Limitations observed.
+:::

@@ -1,0 +1,74 @@
+[
+  {
+    "Beschäftigungsgrad":"Beschäftigungsgrad - Total",
+    "Geschlecht":"Geschlecht - Total",
+    "Quartal":"2025Q1",
+    "value":5511285
+  },
+  {
+    "Beschäftigungsgrad":"Beschäftigungsgrad - Total",
+    "Geschlecht":"Geschlecht - Total",
+    "Quartal":"2025Q2",
+    "value":5515476
+  },
+  {
+    "Beschäftigungsgrad":"Beschäftigungsgrad - Total",
+    "Geschlecht":"Geschlecht - Total",
+    "Quartal":"2025Q3",
+    "value":5531816
+  },
+  {
+    "Beschäftigungsgrad":"Beschäftigungsgrad - Total",
+    "Geschlecht":"Geschlecht - Total",
+    "Quartal":"2025Q4",
+    "value":5544106
+  },
+  {
+    "Beschäftigungsgrad":"Vollzeit",
+    "Geschlecht":"Geschlecht - Total",
+    "Quartal":"2025Q1",
+    "value":3248469
+  },
+  {
+    "Beschäftigungsgrad":"Vollzeit",
+    "Geschlecht":"Geschlecht - Total",
+    "Quartal":"2025Q2",
+    "value":3237234
+  },
+  {
+    "Beschäftigungsgrad":"Vollzeit",
+    "Geschlecht":"Geschlecht - Total",
+    "Quartal":"2025Q3",
+    "value":3249304
+  },
+  {
+    "Beschäftigungsgrad":"Vollzeit",
+    "Geschlecht":"Geschlecht - Total",
+    "Quartal":"2025Q4",
+    "value":3247744
+  },
+  {
+    "Beschäftigungsgrad":"Teilzeit",
+    "Geschlecht":"Geschlecht - Total",
+    "Quartal":"2025Q1",
+    "value":2262815
+  },
+  {
+    "Beschäftigungsgrad":"Teilzeit",
+    "Geschlecht":"Geschlecht - Total",
+    "Quartal":"2025Q2",
+    "value":2278242
+  },
+  {
+    "Beschäftigungsgrad":"Teilzeit",
+    "Geschlecht":"Geschlecht - Total",
+    "Quartal":"2025Q3",
+    "value":2282512
+  },
+  {
+    "Beschäftigungsgrad":"Teilzeit",
+    "Geschlecht":"Geschlecht - Total",
+    "Quartal":"2025Q4",
+    "value":2296361
+  }
+]
