@@ -1,3 +1,7 @@
+# Non-Python dependencies (run once manually):
+# quarto install tinytex       <- required for PDF rendering
+# $env:QUARTO_PYTHON = "path\to\.venv\Scripts\python.exe"  <- set before rendering
+
 anyio==4.12.1
 argon2-cffi==25.1.0
 argon2-cffi-bindings==25.1.0
