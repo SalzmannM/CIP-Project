@@ -48,7 +48,7 @@ This code imports all necessary Python libraries and defines file paths for proj
 
 ```{python}
 # Standard library
-import os, re, sys, time, random, json, threading
+import os, re, sys, time, datetime, random, json, threading
 from itertools import product
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -813,6 +813,7 @@ print(f"\n--- Percentage missing ---")
 print((df_raw.isnull().sum() / len(df_raw) * 100).round(1))
 ```
 
+
 ::: {.callout-important}
 ## #ToDo: Discuss Missing Data Strategy
 After inspecting the missing value patterns, document the decision on how to handle gaps:
@@ -883,11 +884,26 @@ print(df_cleaned["company"].value_counts().head(15))
 
 We validate that scraped values fall within plausible ranges.
 
+### Check posting_date
+
+```{python}
+#| eval: false
+
+# Posting date should be newer than 1 year
+print("posting_date check:")
+print(f"  posting_date:   min={df_cleaned['posting_date'].min()}, max={df_cleaned['posting_date'].max()}")
+one_year_ago = pd.Timestamp.now() - pd.DateOffset(years=1)
+print(f"  Are there dates older than one year: {one_year_ago > df_cleaned['posting_date'].min()}")
+
+```
+
+### Check others
+
 ```{python}
 #| eval: false
 
 # FTE values should be between 0 and 1
-print("FTE range check:")
+print("\nFTE range check:")
 print(f"  fte_from: min={df_cleaned['fte_from'].min()}, max={df_cleaned['fte_from'].max()}")
 print(f"  fte_to:   min={df_cleaned['fte_to'].min()}, max={df_cleaned['fte_to'].max()}")
 
@@ -903,7 +919,7 @@ known_cantons = [
     "zurich", "bern", "luzern", "uri", "schwyz", "obwalden", "nidwalden",
     "glarus", "zug", "freiburg", "solothurn", "basel-stadt", "basel-landschaft",
     "schaffhausen", "appenzell-ausserrhoden", "appenzell-innerrhoden",
-    "st-gallen", "graubuenden", "aargau", "thurgau", "tessin", "waadt",
+    "st-gallen", "graubunden", "aargau", "thurgau", "tessin", "waadt",
     "wallis", "neuenburg", "genf", "jura"
 ]
 # #ToDo: Verify the exact canton slug format used in publicjobs.ch URLs
@@ -957,7 +973,7 @@ canton_mapping = {
     "zug": "ZG", "freiburg": "FR", "solothurn": "SO", "basel-stadt": "BS",
     "basel-landschaft": "BL", "schaffhausen": "SH",
     "appenzell-ausserrhoden": "AR", "appenzell-innerrhoden": "AI",
-    "st-gallen": "SG", "graubuenden": "GR", "aargau": "AG",
+    "st-gallen": "SG", "graubunden": "GR", "aargau": "AG",
     "thurgau": "TG", "tessin": "TI", "waadt": "VD",
     "wallis": "VS", "neuenburg": "NE", "genf": "GE", "jura": "JU",
 }
