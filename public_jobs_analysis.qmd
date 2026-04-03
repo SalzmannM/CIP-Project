@@ -897,10 +897,35 @@ print(f"  Are there dates older than one year: {one_year_ago > df_cleaned['posti
 
 ```
 
-### Check others
+### Check Workload/FTE values
 
 ```{python}
 #| eval: false
+def parse_employment(value):
+    value = str(value).strip()
+    
+    # 1. Handle "Vollzeit"
+    if value.lower() == "vollzeit":
+        return float(100), float(100)
+    
+    # 2. Handle "number1 - number2" (Range)
+    range_match = re.match(r'(\d+)\s*-\s*(\d+)', value)
+    if range_match:
+        return float(range_match.group(1)), float(range_match.group(2))
+    
+    # 3. Handle single number
+    if value.isdigit():
+        return float(value), float(value)
+    
+    # Fallback for unexpected formats
+    return None, None
+
+# Apply the function to create two new columns
+df_cleaned[['workload_from', 'workload_to']] = df_cleaned['workload_raw'].apply(
+    lambda val: pd.Series(parse_employment(val))
+)
+print("\nFTE workload check missing values:")
+print(df_cleaned[['workload_from', 'workload_to']].isnull().sum())
 
 # FTE values should be between 0 and 1
 print("\nFTE range check:")
@@ -908,11 +933,46 @@ print(f"  fte_from: min={df_cleaned['fte_from'].min()}, max={df_cleaned['fte_fro
 print(f"  fte_to:   min={df_cleaned['fte_to'].min()}, max={df_cleaned['fte_to'].max()}")
 
 # Check for any FTE values outside [0, 1]
-invalid_fte = df_cleaned[
-    (df_cleaned["fte_from"] < 0) | (df_cleaned["fte_from"] > 1) |
-    (df_cleaned["fte_to"] < 0) | (df_cleaned["fte_to"] > 1)
-]
+out_of_bounds = (df_cleaned["fte_from"] < 0) | (df_cleaned["fte_from"] > 1) | \
+                (df_cleaned["fte_to"] < 0) | (df_cleaned["fte_to"] > 1) | \
+                (df_cleaned["fte_from"] > df_cleaned["fte_to"])
+
+# Check if fte_from is NOT close to workload_from/100
+math_mismatch = ~np.isclose(df_cleaned["fte_from"], df_cleaned["workload_from"] / 100) | \
+                ~np.isclose(df_cleaned["fte_to"], df_cleaned["workload_to"] / 100)
+
+invalid_fte = df_cleaned[out_of_bounds | math_mismatch]
+
 print(f"\nRows with invalid FTE values: {len(invalid_fte)}")
+print(invalid_fte)
+
+# Check work_time
+def verify_consistency(row):
+    # Handle missing values
+    if pd.isna(row['work_time']) or pd.isna(row['fte_to']):
+        return "Missing Data"
+    
+    label = str(row['work_time']).lower()
+    fte = row['fte_to']
+    
+    if label == "vollzeit":
+        return "OK" if fte >= 0.9 else "Conflict (Should be Teilzeit)"
+    elif label == "teilzeit":
+        return "OK" if fte < 0.9 else "Conflict (Should be Vollzeit)"
+    
+    return "Unknown Label"
+
+df_cleaned['consistency_status'] = df_cleaned.apply(verify_consistency, axis=1)
+
+print(f"\nRows with invalid work_time values: {len(invalid_fte)}")
+print(len(df_cleaned[df_cleaned['consistency_status'] != "OK"]))
+
+```
+
+### Check cantons
+
+```{python}
+#| eval: false
 
 # Check canton values against known Swiss cantons
 known_cantons = [
@@ -922,8 +982,7 @@ known_cantons = [
     "st-gallen", "graubunden", "aargau", "thurgau", "tessin", "waadt",
     "wallis", "neuenburg", "genf", "jura"
 ]
-# #ToDo: Verify the exact canton slug format used in publicjobs.ch URLs
-# and adjust the known_cantons list accordingly
+# Check exact canton slug format
 unknown_cantons = df_cleaned[~df_cleaned["canton"].isin(known_cantons)]["canton"].unique()
 print(f"\nUnknown canton slugs: {unknown_cantons}")
 ```
@@ -943,20 +1002,25 @@ After inspecting the summary statistics, define filtering rules:
 ```{python}
 #| eval: false
 
-# #ToDo: Implement filtering pipeline
-# Example structure:
-# print(f"Before filtering: {len(df_cleaned)} rows")
+#ToDo: Implement filtering pipeline
+print(f"Before filtering: {len(df_cleaned)} rows")
 
-# # Remove rows with missing critical fields
-# df_filtered = df_cleaned.dropna(subset=["title", "occupation_field", "canton"])
-# print(f"After dropping missing critical fields: {len(df_filtered)} rows")
+# Remove rows with duplicate fields
+df_filtered = df_cleaned.drop_duplicates().reset_index(drop=True)
 
-# # Remove invalid FTE ranges
-# df_filtered = df_filtered[
-#     (df_filtered["fte_from"].isna()) |
-#     ((df_filtered["fte_from"] >= 0) & (df_filtered["fte_from"] <= 1))
-# ]
-# print(f"After FTE validation: {len(df_filtered)} rows")
+print(f"After dropping duplicate fields: {len(df_filtered)} rows")
+
+# Remove rows with missing critical fields
+df_filtered = df_filtered.dropna(subset=["title", "occupation_field", "canton"])
+print(f"After dropping missing critical fields: {len(df_filtered)} rows")
+
+# Remove invalid FTE ranges
+df_filtered = df_filtered[
+    (df_filtered["fte_from"].isna()) |
+    ((df_filtered["fte_from"] >= 0) & (df_filtered["fte_from"] <= 1))
+]
+print(f"After FTE validation: {len(df_filtered)} rows")
+
 ```
 
 ## Canton Name Normalization and Mapping
@@ -977,12 +1041,10 @@ canton_mapping = {
     "thurgau": "TG", "tessin": "TI", "waadt": "VD",
     "wallis": "VS", "neuenburg": "NE", "genf": "GE", "jura": "JU",
 }
-# #ToDo: Verify all canton slug values that actually appear in scraped data
-# and adjust mapping accordingly (e.g., check if "graubünden" vs "graubuenden")
 
-# df_filtered["canton_code"] = df_filtered["canton"].map(canton_mapping)
-# unmapped = df_filtered[df_filtered["canton_code"].isna()]["canton"].unique()
-# print(f"Unmapped cantons: {unmapped}")
+df_filtered["canton_code"] = df_filtered["canton"].map(canton_mapping)
+unmapped = df_filtered[df_filtered["canton_code"].isna()]["canton"].unique()
+print(f"Unmapped cantons: {unmapped}")
 ```
 
 ## Enrichment: ISCO-08 Occupation Classification and Salary Join
