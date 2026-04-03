@@ -1115,6 +1115,7 @@ df_jobs_clean.to_json(
     orient="records",
     indent=2,
     force_ascii=False
+    date_format="iso"
 )
 print(f"Cleaned dataset saved: {len(df_jobs_clean)} rows → {path_df_jobs_cleaned}")
 ```
@@ -1122,6 +1123,7 @@ print(f"Cleaned dataset saved: {len(df_jobs_clean)} rows → {path_df_jobs_clean
 
 # Analysis: Geography, Workload Flexibility, and Benefits
 
+#start with df_jobs_clean = pd.read_json(path_df_jobs_cleaned)
 The collected and prepared data is used to examine three key research questions: We illustrate how public sector labor demand distributes across Swiss regions and organization types, analyze workload flexibility patterns compared to official BFS statistics, and assess which fringe benefits are most commonly offered.
 
 ## RQ1: Geographic Distribution of Public Sector Labor Demand
