@@ -778,7 +778,7 @@ print("--- ISCO-08 Mapping Table ---")
 print(df_isco_mapping.to_string(index=False))
 
 # #ToDo: After scraping, verify all unique occupation_field values are covered:
-# unmapped = set(df_filtered["occupation_field"].unique()) - set(isco_mapping.keys())
+# unmapped = set(df_jobs_clean["occupation_field"].unique()) - set(isco_mapping.keys())
 # if unmapped:
 #     print(f"WARNING: Unmapped occupation fields: {unmapped}")
 ```
@@ -841,6 +841,13 @@ df_cleaned["posting_date"] = pd.to_datetime(
 # Convert FTE columns to float
 df_cleaned["fte_from"] = pd.to_numeric(df_cleaned["fte_from"], errors="coerce")
 df_cleaned["fte_to"] = pd.to_numeric(df_cleaned["fte_to"], errors="coerce")
+
+# Fix reversed FTE ranges (e.g. workload_raw "100 - 60" → swap so fte_from ≤ fte_to)
+swapped = df_cleaned["fte_from"] > df_cleaned["fte_to"]
+df_cleaned.loc[swapped, ["fte_from", "fte_to"]] = (
+    df_cleaned.loc[swapped, ["fte_to", "fte_from"]].values
+)
+print(f"Fixed {swapped.sum()} reversed FTE range(s).")
 
 # Convert categorical columns
 df_cleaned["work_time"] = df_cleaned["work_time"].astype("category")
@@ -989,38 +996,30 @@ print(f"\nUnknown canton slugs: {unknown_cantons}")
 
 ## Outlier Identification and Filtering
 
-::: {.callout-important}
-## #ToDo: Define and Implement Outlier Filtering
-After inspecting the summary statistics, define filtering rules:
-
-- Remove duplicate listings (already handled during scraping via `seen_urls`, but verify).
-- Remove rows with missing critical fields (`title`, `occupation_field`, `canton`).
-- Remove any jobs with clearly invalid FTE values.
-- Document the number of rows removed at each step.
-:::
+Duplicate listings, rows with missing critical fields, and invalid FTE values are removed. Each step is logged to document the impact on dataset size.
 
 ```{python}
 #| eval: false
 
-#ToDo: Implement filtering pipeline
 print(f"Before filtering: {len(df_cleaned)} rows")
 
-# Remove rows with duplicate fields
-df_filtered = df_cleaned.drop_duplicates().reset_index(drop=True)
-
-print(f"After dropping duplicate fields: {len(df_filtered)} rows")
+# Remove fully duplicate rows
+df_jobs_clean = df_cleaned.drop_duplicates().reset_index(drop=True)
+print(f"After dropping duplicate rows: {len(df_jobs_clean)} rows")
 
 # Remove rows with missing critical fields
-df_filtered = df_filtered.dropna(subset=["title", "occupation_field", "canton"])
-print(f"After dropping missing critical fields: {len(df_filtered)} rows")
+df_jobs_clean = df_jobs_clean.dropna(subset=["title", "occupation_field", "canton"])
+print(f"After dropping missing critical fields: {len(df_jobs_clean)} rows")
 
-# Remove invalid FTE ranges
-df_filtered = df_filtered[
-    (df_filtered["fte_from"].isna()) |
-    ((df_filtered["fte_from"] >= 0) & (df_filtered["fte_from"] <= 1))
-]
-print(f"After FTE validation: {len(df_filtered)} rows")
-
+# Remove rows where fte_from is outside [0, 1] or fte_to < fte_from
+invalid_fte = (
+    (df_jobs_clean["fte_from"].notna() & ((df_jobs_clean["fte_from"] < 0) | (df_jobs_clean["fte_from"] > 1))) |
+    (df_jobs_clean["fte_to"].notna() & ((df_jobs_clean["fte_to"] < 0) | (df_jobs_clean["fte_to"] > 1))) |
+    (df_jobs_clean["fte_from"].notna() & df_jobs_clean["fte_to"].notna() & (df_jobs_clean["fte_from"] > df_jobs_clean["fte_to"]))
+)
+df_jobs_clean = df_jobs_clean[~invalid_fte].reset_index(drop=True)
+print(f"After removing invalid FTE values: {len(df_jobs_clean)} rows")
+print(f"Total rows removed: {len(df_cleaned) - len(df_jobs_clean)}")
 ```
 
 ## Canton Name Normalization and Mapping
@@ -1042,9 +1041,37 @@ canton_mapping = {
     "wallis": "VS", "neuenburg": "NE", "genf": "GE", "jura": "JU",
 }
 
-df_filtered["canton_code"] = df_filtered["canton"].map(canton_mapping)
-unmapped = df_filtered[df_filtered["canton_code"].isna()]["canton"].unique()
+df_jobs_clean["canton_code"] = df_jobs_clean["canton"].map(canton_mapping)
+unmapped = df_jobs_clean[df_jobs_clean["canton_code"].isna()]["canton"].unique()
 print(f"Unmapped cantons: {unmapped}")
+```
+
+## Enrichment: Seniority Level
+
+To enable analysis of job seniority structure across sectors and cantons, we derive a `seniority` column from keywords in the job title.
+
+```{python}
+#| eval: false
+
+def classify_seniority(title: str) -> str:
+    t = str(title).lower()
+    if any(kw in t for kw in ["praktikum", "praktikant", "lernende", "junior"]):
+        return "Einstieg"
+    if any(kw in t for kw in ["stv.", "stv ", "stellvertreter", "stellvertreterin"]):
+        return "Stellvertretung"
+    if any(kw in t for kw in ["projektleiter", "projektleiterin"]):
+        return "Projektleitung"
+    if any(kw in t for kw in [
+        "leiter", "leiterin", "chef", "chefin", "direktor", "direktorin",
+        "abteilungsleiter", "teamleiter", "bereichsleiter", "head"
+    ]):
+        return "Führung"
+    return "Fachkraft"
+
+df_jobs_clean["seniority"] = df_jobs_clean["title"].apply(classify_seniority)
+df_jobs_clean["seniority"] = df_jobs_clean["seniority"].astype("category")
+
+print(df_jobs_clean["seniority"].value_counts())
 ```
 
 ## Enrichment: ISCO-08 Occupation Classification and Salary Join
@@ -1055,27 +1082,27 @@ Using the mapping table defined in section 2.5.3, we add ISCO-08 major group cod
 #| eval: false
 
 # Apply ISCO mapping (defined in section 2.5.3)
-df_filtered["isco_major"] = df_filtered["occupation_field"].map(
+df_jobs_clean["isco_major"] = df_jobs_clean["occupation_field"].map(
     {k: v["isco"] for k, v in isco_mapping.items()}
 )
-df_filtered["isco_major_name"] = df_filtered["occupation_field"].map(
+df_jobs_clean["isco_major_name"] = df_jobs_clean["occupation_field"].map(
     {k: v["isco_name"] for k, v in isco_mapping.items()}
 )
 
 # Check for unmapped fields
-unmapped = df_filtered[df_filtered["isco_major"].isna()]["occupation_field"].unique()
+unmapped = df_jobs_clean[df_jobs_clean["isco_major"].isna()]["occupation_field"].unique()
 if len(unmapped) > 0:
     print(f"WARNING: Unmapped occupation fields: {unmapped}")
 else:
     print("All occupation fields successfully mapped to ISCO-08 groups")
 
 # #ToDo: Join LSE median salaries (once LSE data is loaded and column names confirmed):
-# df_filtered = df_filtered.merge(
+# df_jobs_clean = df_jobs_clean.merge(
 #     df_bfs_lse[["isco_major", "median_salary"]],
 #     on="isco_major",
 #     how="left"
 # )
-# print(f"Salary data joined — rows with salary: {df_filtered['median_salary'].notna().sum()}")
+# print(f"Salary data joined — rows with salary: {df_jobs_clean['median_salary'].notna().sum()}")
 ```
 
 ## Save Cleaned Dataset
@@ -1083,14 +1110,13 @@ else:
 ```{python}
 #| eval: false
 
-# #ToDo: Uncomment after cleaning pipeline is finalized
-# df_filtered.to_json(
-#     path_df_jobs_cleaned,
-#     orient="records",
-#     indent=2,
-#     force_ascii=False
-# )
-# print(f"Cleaned dataset saved: {len(df_filtered)} rows → {path_df_jobs_cleaned}")
+df_jobs_clean.to_json(
+    path_df_jobs_cleaned,
+    orient="records",
+    indent=2,
+    force_ascii=False
+)
+print(f"Cleaned dataset saved: {len(df_jobs_clean)} rows → {path_df_jobs_cleaned}")
 ```
 
 
@@ -1128,7 +1154,7 @@ Use the canton codes mapped in the cleaning step. Load the Swiss cantons GeoJSON
 #     swiss_geo = json.loads(url.read().decode())
 # 
 # # Count jobs per canton
-# canton_counts = df_filtered["canton_code"].value_counts().reset_index()
+# canton_counts = df_jobs_clean["canton_code"].value_counts().reset_index()
 # canton_counts.columns = ["canton_code", "job_count"]
 # 
 # fig = px.choropleth_map(
@@ -1155,7 +1181,7 @@ Use the canton codes mapped in the cleaning step. Load the Swiss cantons GeoJSON
 #| fig-cap: "Job listings by occupation field and organization type"
 
 # #ToDo: Implement stacked/grouped bar chart
-# cross_tab = pd.crosstab(df_filtered["occupation_field"], df_filtered["org_type"])
+# cross_tab = pd.crosstab(df_jobs_clean["occupation_field"], df_jobs_clean["org_type"])
 # 
 # fig = px.bar(
 #     cross_tab.reset_index().melt(id_vars="occupation_field"),
@@ -1194,7 +1220,7 @@ Key analysis points:
 
 # #ToDo: Implement workload analysis
 # fig = px.box(
-#     df_filtered.dropna(subset=["fte_from", "fte_to"]),
+#     df_jobs_clean.dropna(subset=["fte_from", "fte_to"]),
 #     x="occupation_field",
 #     y="fte_to",
 #     color="work_time",
@@ -1211,8 +1237,8 @@ Key analysis points:
 
 # #ToDo: Implement canton-level workload comparison
 # workload_by_canton = pd.crosstab(
-#     df_filtered["canton_code"],
-#     df_filtered["work_time"],
+#     df_jobs_clean["canton_code"],
+#     df_jobs_clean["work_time"],
 #     normalize="index"
 # ).reset_index()
 # 
