@@ -58,6 +58,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import geopandas as gpd
 import plotly.express as px
 import plotly.graph_objects as go
 
@@ -80,6 +81,7 @@ path_df_jobs_cleaned = os.path.join(data_path, "publicjobs_cleaned.json")     # 
 path_df_bfs_sake = os.path.join(data_path, "bfs_besta.json")                 # BFS BESTA employment data (via PX-Web API)
 path_df_bfs_lse = os.path.join(data_path, "bfs_lse_isco.json")               # BFS LSE salary data (parsed from Excel)
 path_lse_excel = os.path.join(data_path, "bfs_lse_2022_isco.xlsx")           # BFS LSE 2022 raw Excel download
+path_geojson_cantons = os.path.join(data_path, "swissBOUNDARIES3D_1_3_TLM_KANTONSGEBIET.geojson")  # Swiss canton boundaries GeoJSON
 
 # #ToDo: Add additional file paths as needed for:
 # - any additional BFS reference datasets
@@ -1144,107 +1146,320 @@ Use the canton codes mapped in the cleaning step. Load the Swiss cantons GeoJSON
 :::
 
 ```{python}
-#| eval: false
 #| label: fig-jobs-per-canton
 #| fig-cap: "Geographic distribution of public sector job listings across Swiss cantons"
 
-# #ToDo: Implement choropleth map
-# import urllib.request
-# 
-# geojson_url = "https://raw.githubusercontent.com/empet/Datasets/master/swiss-cantons.geojson"
-# with urllib.request.urlopen(geojson_url) as url:
-#     swiss_geo = json.loads(url.read().decode())
-# 
-# # Count jobs per canton
-# canton_counts = df_jobs_clean["canton_code"].value_counts().reset_index()
-# canton_counts.columns = ["canton_code", "job_count"]
-# 
-# fig = px.choropleth_map(
-#     canton_counts,
-#     geojson=swiss_geo,
-#     locations="canton_code",
-#     featureidkey="properties.id",
-#     color="job_count",
-#     color_continuous_scale="Blues",
-#     zoom=6.5,
-#     center={"lat": 46.8, "lon": 8.3},
-#     opacity=0.6,
-#     labels={"job_count": "Number of Listings", "canton_code": "Canton"},
-# )
-# fig.update_layout(margin={"r": 0, "t": 0, "l": 0, "b": 0})
-# fig.show()
+# Load cleaned dataset
+df_jobs_clean = pd.read_json(path_df_jobs_cleaned)
+
+# Map cities to cantons (canton name as used in GeoJSON)
+city_to_canton = {
+    "Zug": "Zug",
+    "Bülach": "Zürich",
+    "Muttenz": "Basel-Landschaft",
+    "Horgen": "Zürich",
+    "Genève": "Genève",
+    "Lausanne": "Vaud",
+    "Bern": "Bern",
+    "Basel": "Basel-Stadt",
+    # Add other cities in your dataset
+}
+df_jobs_clean['canton_name'] = df_jobs_clean['city'].map(city_to_canton)
+
+# Count jobs per canton
+job_counts = df_jobs_clean.groupby("canton_name").size().reset_index(name="job_count")
+
+# Load Swiss cantons GeoJSON (canton boundaries)
+cantons_gdf = gpd.read_file(path_geojson_cantons)
+
+# Merge job counts with GeoDataFrame
+cantons_gdf = cantons_gdf.merge(job_counts, left_on="NAME", right_on="canton_name", how="left")
+cantons_gdf["job_count"] = cantons_gdf["job_count"].fillna(0)
+
+# Plot the map
+fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+cantons_gdf.plot(
+    column="job_count",
+    cmap="viridis",
+    linewidth=0.8,
+    edgecolor="black",
+    legend=True,
+    ax=ax
+)
+ax.set_title("Job Count per Canton — Switzerland", fontsize=16)
+ax.axis("off")
+plt.show()
 ```
 
 ### Jobs by Occupation Field and Organization Type
 
 ```{python}
-#| eval: false
-#| label: fig-jobs-by-field
-#| fig-cap: "Job listings by occupation field and organization type"
+#| label: fig-jobs-by-seniority
+#| fig-cap: "Job listings by seniority level"
 
-# #ToDo: Implement stacked/grouped bar chart
-# cross_tab = pd.crosstab(df_jobs_clean["occupation_field"], df_jobs_clean["org_type"])
-# 
-# fig = px.bar(
-#     cross_tab.reset_index().melt(id_vars="occupation_field"),
-#     x="occupation_field",
-#     y="value",
-#     color="org_type",
-#     labels={"value": "Number of Listings", "occupation_field": "Occupation Field", "org_type": "Organization Type"},
-# )
-# fig.update_layout(xaxis_tickangle=-45)
-# fig.show()
+df_jobs_clean = pd.read_json(path_df_jobs_cleaned)
+
+sns.set(style="whitegrid")
+plt.figure(figsize=(8, 5))
+ax = sns.countplot(
+    x='seniority',
+    data=df_jobs_clean,
+    palette='viridis',
+    order=df_jobs_clean['seniority'].value_counts().index
+)
+for p in ax.patches:
+    height = p.get_height()
+    ax.annotate(f'{height}',
+                (p.get_x() + p.get_width() / 2., height),
+                ha='center', va='bottom', fontsize=10, color='black')
+plt.title("Jobs by Seniority", fontsize=16)
+plt.xlabel("Seniority Level")
+plt.ylabel("Number of Jobs")
+plt.show()
 ```
 
-## RQ2: Workload Flexibility and Comparison with BFS SAKE Statistics
+```{python}
+#| label: fig-jobs-by-isco
+#| fig-cap: "Job listings by ISCO major group"
 
-Which public sector branches and regions offer the highest flexibility (part-time vs. full-time roles), and how do these advertised workloads compare to official BFS employment statistics?
+df_jobs_clean = pd.read_json(path_df_jobs_cleaned)
 
-### Workload Distribution by Occupation Field
+plt.figure(figsize=(10, 8))
+ax = sns.countplot(
+    y='isco_major_name',
+    data=df_jobs_clean,
+    order=df_jobs_clean['isco_major_name'].value_counts().index,
+    palette='viridis'
+)
+for p in ax.patches:
+    width = p.get_width()
+    ax.annotate(f'{int(width)}',
+                (width + 0.5, p.get_y() + p.get_height() / 2),
+                ha='left', va='center', fontsize=10, color='black')
+plt.title("Jobs by ISCO Major", fontsize=16)
+plt.xlabel("Number of Jobs")
+plt.ylabel("ISCO Major")
+plt.tight_layout()
+plt.show()
+```
+
+## RQ2: Statistical Analysis of Workload Flexibility
+
+**Research question:** Are there statistically significant associations between workload flexibility (Vollzeit vs. Teilzeit) and structural factors such as canton, occupation field, or organization type in the Swiss public sector job market?
+
+Workload flexibility is increasingly relevant for talent attraction. This section first provides a descriptive overview of workload patterns, then tests whether the probability or level of part-time employment can be explained by job or employer characteristics, using a combination of regression models, group comparison tests, and Bayesian inference.
+
+### Exploratory Overview
+
+```{python}
+#| label: fig-fte-by-seniority
+#| fig-cap: "FTE distribution by seniority level"
+
+df_jobs_clean = pd.read_json(path_df_jobs_cleaned)
+df_jobs_clean = df_jobs_clean.dropna(subset=['fte_from', 'fte_to', 'canton'])
+df_jobs_clean['fte_avg'] = df_jobs_clean[['fte_from', 'fte_to']].mean(axis=1)
+df_jobs_clean['workload_type'] = df_jobs_clean['fte_avg'].apply(lambda x: 'Teilzeit' if x < 1 else 'Vollzeit')
+
+plt.figure(figsize=(12, 6))
+sns.boxplot(
+    data=df_jobs_clean,
+    x='seniority',
+    y='fte_avg',
+    palette='Set2'
+)
+plt.ylabel("Average FTE")
+plt.xlabel("Seniority Level")
+plt.title("FTE Distribution by Seniority Level")
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: fig-workload-by-canton
+#| fig-cap: "Part-time vs. full-time share by canton"
+
+df_jobs_clean = pd.read_json(path_df_jobs_cleaned)
+df_jobs_clean = df_jobs_clean.dropna(subset=['fte_from', 'fte_to', 'canton'])
+df_jobs_clean['fte_avg'] = df_jobs_clean[['fte_from', 'fte_to']].mean(axis=1)
+df_jobs_clean['workload_type'] = df_jobs_clean['fte_avg'].apply(lambda x: 'Teilzeit' if x < 1 else 'Vollzeit')
+
+canton_counts = df_jobs_clean.groupby(['canton', 'workload_type']).size().unstack(fill_value=0)
+canton_percent = canton_counts.div(canton_counts.sum(axis=1), axis=0) * 100
+
+canton_percent.plot(
+    kind='bar',
+    stacked=True,
+    figsize=(12, 6),
+    color=['skyblue', 'orange']
+)
+plt.ylabel("Percentage of Jobs")
+plt.xlabel("Canton")
+plt.title("Workload Distribution per Canton (Part-time vs Full-time)")
+plt.legend(title="Workload")
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+```
+
+### Statistical Tests
 
 ::: {.callout-important}
-## #ToDo: Implement RQ2 Visualizations
-Create the following visualizations:
+## #ToDo: Implement RQ2 Statistical Tests
+The following list contains **ideas and possible approaches** for the statistical analysis - not all of them need to be implemented. Select the analyses that best fit the data and the research question after the cleaning pipeline is finalized.
 
-1. **Box plot** of FTE ranges (`fte_from`, `fte_to`) by occupation field.
-2. **Stacked bar chart** of Vollzeit vs. Teilzeit share per canton.
-3. **Comparison chart** of scraped workload distribution vs. BFS SAKE official statistics (requires BFS data integration from section 2.5.1).
+**Prerequisite - Check for Normality:** Before choosing between parametric and non-parametric tests, verify whether `fte_to` is approximately normally distributed using a QQ-plot. This determines whether to use the t-test or the Wilcoxon test in step 4.
 
-Key analysis points:
-- Which fields/regions offer the most part-time flexibility?
-- How does the publicjobs.ch workload profile differ from the BFS SAKE baseline?
+1. **Pearson Correlation**: Compute the correlation coefficient *r* between `fte_to` (continuous workload) and the number of benefits offered per job listing. Report *r* and R² and interpret direction and strength. H₀: there is no linear association between FTE and benefit count.
+
+2. **Simple Linear Regression**: Fit a simple linear model `lm(fte_to ~ benefit_count)` to quantify whether jobs with more benefits systematically offer higher or lower FTE. Report the regression coefficient, p-value, and R².
+
+3. **Multiple Linear Regression with F-Test**: Fit a multiple regression model `lm(fte_to ~ occupation_field + org_type)` to test whether structural factors jointly predict workload level. Report the F-test statistic, overall model p-value, individual coefficients, and R². Interpret each coefficient conditionally (all other variables held constant).
+
+4. **Two-Sample t-Test or Wilcoxon Rank-Sum Test**: Compare the FTE distributions of two specific organization types (e.g., Spitäler vs. Gemeinden). If the QQ-plot confirms approximate normality, use the two-sample t-test. Otherwise use the non-parametric Wilcoxon rank-sum test (assumes symmetric distribution). Report the test statistic and p-value. H₀: the two groups have the same FTE distribution.
+
+5. **Bayesian Analysis with HDI and ROPE**: For a selected group comparison (e.g., Teilzeit proportion in Medizin vs. Informatik), estimate a Beta posterior analytically or via MCMC. Report the 95% HDI (Highest Density Interval) of the posterior difference. Define a ROPE around zero and assess what proportion of the posterior falls inside vs. outside the ROPE to evaluate practical significance beyond a binary p-value.
+
+6. **Logistic Regression / GLM Binomial**: Model `is_teilzeit ~ occupation_field + org_type + benefit_count` using a Binomial GLM. Report Odds Ratios (`exp(coefficients)`) with 95% confidence intervals for each predictor. Evaluate model quality using AIC (lower = better) and a ROC curve with AUC. Compare to a null model (intercept-only) to assess overall model fit.
+
+For each implemented test, report: null hypothesis, test statistic / posterior summary, p-value / Odds Ratio / HDI, and a brief interpretation.
 :::
 
 ```{python}
 #| eval: false
-#| label: fig-workload-distribution
-#| fig-cap: "FTE workload distribution by occupation field"
+#| label: fig-qqplot-fte
+#| fig-cap: "QQ-Plot: Normality check for fte_to"
 
-# #ToDo: Implement workload analysis
-# fig = px.box(
-#     df_jobs_clean.dropna(subset=["fte_from", "fte_to"]),
-#     x="occupation_field",
-#     y="fte_to",
-#     color="work_time",
-#     labels={"fte_to": "FTE (upper bound)", "occupation_field": "Occupation Field"},
-# )
-# fig.update_layout(xaxis_tickangle=-45)
-# fig.show()
+# #ToDo: Check normality of fte_to before choosing t-test vs. Wilcoxon
+# import scipy.stats as stats
+#
+# fig, ax = plt.subplots()
+# stats.probplot(df_jobs_clean["fte_to"].dropna(), dist="norm", plot=ax)
+# ax.set_title("QQ-Plot: fte_to vs. Normal Distribution")
+# plt.tight_layout()
+# plt.show()
+# # If points lie approximately on the diagonal line → normality holds → use t-test
+# # If strong deviations → use Wilcoxon rank-sum test
 ```
 
 ```{python}
 #| eval: false
-#| label: fig-workload-by-canton
-#| fig-cap: "Part-time vs. full-time share by canton"
+#| label: tbl-correlation-fte-benefits
+#| tbl-cap: "Pearson correlation: FTE vs. benefit count"
 
-# #ToDo: Implement canton-level workload comparison
-# workload_by_canton = pd.crosstab(
-#     df_jobs_clean["canton_code"],
-#     df_jobs_clean["work_time"],
-#     normalize="index"
-# ).reset_index()
-# 
-# # #ToDo: Add BFS SAKE comparison overlay
+# #ToDo: Implement Pearson correlation
+# r = df_jobs_clean["fte_to"].corr(df_jobs_clean["benefit_count"])
+# r_squared = r ** 2
+# print(f"Pearson r = {r:.3f}, R² = {r_squared:.3f}")
+```
+
+```{python}
+#| eval: false
+#| label: tbl-simple-regression-fte-benefits
+#| tbl-cap: "Simple linear regression: fte_to ~ benefit_count"
+
+# #ToDo: Implement simple linear regression
+# import statsmodels.formula.api as smf
+#
+# model = smf.ols("fte_to ~ benefit_count", data=df_jobs_clean).fit()
+# print(model.summary())
+```
+
+```{python}
+#| eval: false
+#| label: tbl-multiple-regression-fte
+#| tbl-cap: "Multiple linear regression with F-test: fte_to ~ occupation_field + org_type"
+
+# #ToDo: Implement multiple linear regression
+# import statsmodels.formula.api as smf
+#
+# model_multi = smf.ols("fte_to ~ C(occupation_field) + C(org_type)", data=df_jobs_clean).fit()
+# print(model_multi.summary())
+```
+
+```{python}
+#| eval: false
+#| label: tbl-wilcoxon-fte-orgtypes
+#| tbl-cap: "Two-sample t-test or Wilcoxon rank-sum test: FTE in Spitäler vs. Gemeinden"
+
+# #ToDo: Implement two-sample t-test OR Wilcoxon rank-sum test (depending on QQ-plot result)
+# from scipy.stats import ttest_ind, ranksums
+#
+# group_a = df_jobs_clean[df_jobs_clean["org_type"] == "Spital"]["fte_to"].dropna()
+# group_b = df_jobs_clean[df_jobs_clean["org_type"] == "Gemeinde"]["fte_to"].dropna()
+#
+# # Option A: Two-sample t-test (if QQ-plot confirms normality)
+# stat, p = ttest_ind(group_a, group_b)
+# print(f"t-test: t = {stat:.2f}, p = {p:.4f}")
+#
+# # Option B: Wilcoxon rank-sum test (if normality not confirmed)
+# stat, p = ranksums(group_a, group_b)
+# print(f"Wilcoxon W = {stat:.2f}, p = {p:.4f}")
+```
+
+```{python}
+#| eval: false
+#| label: tbl-bayesian-rope
+#| tbl-cap: "Bayesian analysis with HDI and ROPE: Teilzeit proportion Medizin vs. Informatik"
+
+# #ToDo: Implement Bayesian Beta posterior + ROPE
+# from scipy.stats import beta as beta_dist
+#
+# grp_medizin = df_jobs_clean[df_jobs_clean["occupation_field"] == "Medizin / Ärzte / Pflege"]
+# grp_it      = df_jobs_clean[df_jobs_clean["occupation_field"] == "Informatik / IT"]
+#
+# z_m = (grp_medizin["work_time"] == "Teilzeit").sum()
+# n_m = len(grp_medizin)
+# z_it = (grp_it["work_time"] == "Teilzeit").sum()
+# n_it = len(grp_it)
+#
+# a, b = 1, 1
+# post_m  = beta_dist(a + z_m,  b + n_m  - z_m)
+# post_it = beta_dist(a + z_it, b + n_it - z_it)
+#
+# samples = post_m.rvs(10000) - post_it.rvs(10000)
+# rope_low, rope_high = -0.05, 0.05
+# pct_in_rope = np.mean((samples >= rope_low) & (samples <= rope_high))
+# print(f"Posterior mean difference: {samples.mean():.3f}")
+# print(f"95% credible interval: [{np.percentile(samples,2.5):.3f}, {np.percentile(samples,97.5):.3f}]")
+# print(f"Proportion of posterior in ROPE {rope_low}–{rope_high}: {pct_in_rope:.2%}")
+```
+
+```{python}
+#| eval: false
+#| label: tbl-logistic-regression
+#| tbl-cap: "Logistic Regression (GLM Binomial): predictors of Teilzeit"
+
+# #ToDo: Implement Logistic Regression / GLM Binomial
+# import statsmodels.formula.api as smf
+# from sklearn.metrics import roc_auc_score, RocCurveDisplay
+#
+# df_model = df_jobs_clean.copy()
+# df_model["is_teilzeit"] = (df_model["work_time"] == "Teilzeit").astype(int)
+# df_model = df_model.dropna(subset=["is_teilzeit", "occupation_field", "org_type", "benefit_count"])
+#
+# model_logit = smf.logit(
+#     "is_teilzeit ~ C(occupation_field) + C(org_type) + benefit_count",
+#     data=df_model
+# ).fit()
+# print(model_logit.summary())
+#
+# odds_ratios = np.exp(model_logit.params)
+# conf_int_or = np.exp(model_logit.conf_int())
+# print("\n--- Odds Ratios with 95% CI ---")
+# print(pd.concat([odds_ratios, conf_int_or], axis=1).rename(
+#     columns={0: "OR", 1: "CI_low", 2: "CI_high"}))
+#
+# model_null = smf.logit("is_teilzeit ~ 1", data=df_model).fit(disp=0)
+# print(f"\nAIC full model: {model_logit.aic:.1f}")
+# print(f"AIC null model: {model_null.aic:.1f}")
+#
+# y_pred_prob = model_logit.predict(df_model)
+# auc = roc_auc_score(df_model["is_teilzeit"], y_pred_prob)
+# print(f"\nAUC: {auc:.3f}")
+# RocCurveDisplay.from_predictions(df_model["is_teilzeit"], y_pred_prob)
+# plt.title("ROC Curve: Logistic Regression (Teilzeit prediction)")
+# plt.show()
 ```
 
 ## RQ3: Benefits and Attractiveness
@@ -1261,23 +1476,60 @@ Benefit tags are already extracted from the overview cards (section 2.4) and enc
 :::
 
 ```{python}
-#| eval: false
 #| label: fig-benefits-frequency
 #| fig-cap: "Most frequently offered fringe benefits in public sector job listings"
 
-# #ToDo: Implement using the benefit dummy columns from section 2.4
-# Example:
-# benefit_cols = [c for c in df_with_benefits.columns if c.startswith("benefit_")]
-# benefit_counts = df_with_benefits[benefit_cols].sum().sort_values(ascending=False)
-# 
-# fig = px.bar(
-#     x=benefit_counts.head(15).values,
-#     y=benefit_counts.head(15).index.str.replace("benefit_", ""),
-#     orientation="h",
-#     labels={"x": "Number of Listings", "y": "Benefit"},
-# )
-# fig.update_layout(yaxis=dict(autorange="reversed"))
-# fig.show()
+df_jobs_clean = pd.read_json(path_df_jobs_cleaned)
+benefits_clean = pd.read_json(path_df_jobs_benefits)
+
+# Encode benefits as dummy variables
+all_benefits = sorted({b for sublist in benefits_clean['benefits'] for b in sublist})
+for b in all_benefits:
+    benefits_clean[b] = benefits_clean['benefits'].apply(lambda x: 1 if b in x else 0)
+
+# Merge job info with benefits
+merged = benefits_clean.merge(
+    df_jobs_clean[['detail_url', 'fte_from', 'fte_to', 'canton']],
+    on='detail_url',
+    how='left'
+)
+merged = merged.dropna(subset=['fte_from', 'fte_to'])
+merged['fte_avg'] = merged[['fte_from', 'fte_to']].mean(axis=1)
+merged['workload_type'] = merged['fte_avg'].apply(lambda x: 'Teilzeit' if x < 1 else 'Vollzeit')
+
+# Top 10 benefits by workload type
+pct_df = merged.groupby('workload_type')[all_benefits].mean() * 100
+pct_df = pct_df.transpose().sort_values(by='Vollzeit', ascending=False)
+top_benefits = pct_df.head(10).reset_index().rename(columns={'index': 'Benefit'})
+melted = top_benefits.melt(id_vars='Benefit', var_name='Workload', value_name='Percentage')
+
+plt.figure(figsize=(10, 6))
+sns.barplot(data=melted, y='Benefit', x='Percentage', hue='Workload')
+plt.xlabel("Percentage of Jobs Offering Benefit (%)")
+plt.ylabel("Benefit")
+plt.title("Top 10 Benefits: Part-time vs Full-time Jobs")
+plt.legend(title='Workload')
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: fig-benefits-by-canton
+#| fig-cap: "Heatmap: Top 10 benefits occurrence by canton"
+
+heatmap_data = merged.dropna(subset=['canton']).groupby('canton')[top_benefits['Benefit']].sum()
+
+plt.figure(figsize=(12, 8))
+sns.heatmap(heatmap_data, cmap="YlGnBu", annot=True, fmt="d")
+plt.title("Top 10 Benefits Occurrence by Canton")
+plt.xlabel("Benefit")
+plt.ylabel("Canton")
+plt.tight_layout()
+plt.show()
+
+avg_pct = pct_df.mean(axis=1).sort_values(ascending=False)
+print("Top benefits offered overall:")
+print(avg_pct.head(10))
 ```
 
 # Results and Discussion
