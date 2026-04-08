@@ -1462,6 +1462,66 @@ For each implemented test, report: null hypothesis, test statistic / posterior s
 # plt.show()
 ```
 
+### Workload Flexibility: Job Postings vs. BFS Employment Benchmark
+
+To assess whether public-sector job postings reflect the actual workload structure of the Swiss labour force, the observed Teilzeit / Vollzeit distribution in the 2026Q1 job listings is compared against the corresponding BFS BESTA reference figures for 2025Q1. A chi-square test of independence evaluates whether the two distributions are statistically distinguishable.
+
+```{python}
+#| label: fig-flex-comparison
+#| fig-cap: "Workload flexibility: job postings (2026Q1) vs. BFS employment benchmark (2025Q1)"
+
+from scipy.stats import chi2_contingency
+
+jobs_df = pd.read_json(path_df_jobs_cleaned)
+stats_df = pd.read_json(path_df_bfs_sake)
+
+jobs_df['posting_date'] = pd.to_datetime(jobs_df['posting_date'], unit='ms')
+jobs_df['fte_to'] = jobs_df['fte_to'].fillna(jobs_df['fte_from'])
+jobs_df['fte_avg'] = (jobs_df['fte_from'] + jobs_df['fte_to']) / 2
+jobs_df['flexibility'] = jobs_df['fte_avg'].apply(lambda x: 'Teilzeit' if x < 1.0 else 'Vollzeit')
+jobs_df['year_quarter'] = jobs_df['posting_date'].dt.to_period('Q').astype(str)
+
+jobs_q = jobs_df[jobs_df['year_quarter'] == '2026Q1']
+jobs_flex_counts = jobs_q['flexibility'].value_counts()
+jobs_flex_pct = jobs_flex_counts / jobs_flex_counts.sum() * 100
+
+emp_q = stats_df[stats_df['Geschlecht'] == 'Geschlecht - Total']
+emp_q = emp_q[emp_q['Beschäftigungsgrad'].isin(['Vollzeit', 'Teilzeit'])]
+emp_q = emp_q[emp_q['Quartal'] == '2025Q1']
+emp_flex_counts = emp_q.groupby('Beschäftigungsgrad')['value'].sum()
+emp_flex_pct = emp_flex_counts / emp_flex_counts.sum() * 100
+
+flex_compare_pct = pd.DataFrame({
+    'Jobs 2026Q1': jobs_flex_pct,
+    'BFS 2025Q1': emp_flex_pct
+}).fillna(0)
+
+flex_compare_pct.T.plot(kind='bar', figsize=(6, 4))
+plt.ylabel('Percentage (%)')
+plt.title('Flexibility Comparison (Part-time vs Full-time)')
+plt.xticks(rotation=0)
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: tbl-chi2-flex
+#| tbl-cap: "Chi-square test: workload flexibility — job postings vs. BFS benchmark"
+
+flex_compare_counts = pd.DataFrame({
+    'Jobs 2026Q1': [jobs_flex_counts.get('Teilzeit', 0), jobs_flex_counts.get('Vollzeit', 0)],
+    'BFS 2025Q1': [emp_flex_counts.get('Teilzeit', 0), emp_flex_counts.get('Vollzeit', 0)]
+}, index=['Teilzeit', 'Vollzeit'])
+
+print("Flexibility comparison (Jobs 2026Q1 vs BFS 2025Q1):")
+print(flex_compare_counts)
+
+chi2, p, dof, expected = chi2_contingency(flex_compare_counts)
+print(f"\nChi-square statistic: {chi2:.2f}")
+print(f"Degrees of freedom:   {dof}")
+print(f"p-value:              {p:.4e}")
+```
+
 ## RQ3: Benefits and Attractiveness
 
 Which fringe benefits (e.g., Home Office, public transport contributions, central location) are most frequently used to attract talent in the public sector, and do these vary by canton or workload?
