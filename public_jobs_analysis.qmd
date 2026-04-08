@@ -1623,12 +1623,4 @@ Address at least:
 
 # Appendix: Use of GenAI
 
-::: {.callout-important}
-## #ToDo: Document GenAI Usage
-Describe how and where generative AI tools were used during the project (as required by the CIP project description). Cover:
-
-- Which tools were used (e.g., Claude, ChatGPT)?
-- For which tasks (code debugging, text polishing, translation, etc.)?
-- How outputs were verified and validated.
-- Limitations observed.
-:::
+Throughout this project, Claude was used as a supporting tool at various stages of the workflow. The group developed the project concept, research questions, and analytical approach independently. During implementation, Claude assisted iteratively with code development - particularly for the dynamic web scraper, where the team worked through the site's HTML structure, DOM selectors, and Selenium-based interaction logic (including pagination and cookie handling) step by step, validating each component against the live website. Claude also provided support during statistical analysis and visualisation implementation, as well as in polishing written documentation. All outputs were reviewed and validated by the group before inclusion in the final submission.
