@@ -41,7 +41,7 @@ format:
         \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
 
 execute:
-  echo: false
+  echo: true
   warning: false
   message: false
   cache: false

@@ -25,8 +25,10 @@ CIP_FS2026_106/
 ├── .gitignore
 ├── .vscode/
 │   └── settings.json          # Positron/VS Code Python + Quarto config
-├── data/                      # scraped data & BFS reference files (git-ignored)
+├── data/                      # scraped data, BFS reference files, GeoJson (git-ignored)
 │   └── .gitkeep
+├── public_jobs_analysis.html  # html version of documentation including code-chunks
+├── public_jobs_analysis.pdf   # clean 6 page pdf-version of documentation
 ├── public_jobs_analysis.qmd   # main Quarto document (code + documentation)
 ├── requirements.txt           # Python dependencies
 ├── style.css                  # custom Quarto styling (optional)
