@@ -39,7 +39,7 @@ CIP_FS2026_106/
 
 ```bash
 # 1. Clone the repository
-git clone <https://github.com/SalzmannM/CIP-Project.git>
+git clone <https://github.com/SalzmannM/CIP_FS2026_106.git>
 cd CIP_FS2026_106
 
 # 2. Create virtual environment
@@ -61,7 +61,7 @@ quarto render public_jobs_analysis.qmd
 ## Data Sources
 
 - **publicjobs.ch** — Job listings (web scraping, Selenium + BeautifulSoup)
-- **BFS BESTA** — Employment statistics by sector and Beschäftigungsgrad (PX-Web API)
+- **BFS BESTA** — Employment statistics by sector and "Beschäftigungsgrad" (PX-Web API)
 - **BFS LSE 2022** — Median salaries by ISCO-08 occupation group (Excel download)
 
 ## Tools & Technologies
