@@ -6,9 +6,9 @@ This project analyzes job advertisements within the Swiss public sector using da
 
 ## Research Questions
 
-1. **Geography & Market Demand**: How does current demand for public sector labour distribute across Swiss regions and organization types?
-2. **Workload & Flexibility**: Which sectors/regions offer the highest flexibility (part-time vs. full-time), and how do these compare to official BFS employment statistics?
-3. **Benefits & Attractiveness**: Which fringe benefits are most frequently offered, and do these vary by canton or workload?
+1. **Geographic Distribution & Occupational Composition**: How does Swiss public-sector labour demand distribute geographically and by occupational class?
+2. **Workload Flexibility**: Are job postings statistically distinguishable from the BFS workforce benchmark in terms of full-time / part-time split?
+3. **Benefits & Attractiveness**: Which fringe benefits are most commonly advertised, and how do they vary between part-time and full-time roles and across cantons?
 
 ## Team & Code Contributions
 
