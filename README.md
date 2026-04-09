@@ -14,10 +14,9 @@ This project analyzes job advertisements within the Swiss public sector using da
 
 | Name | Contribution |
 |---|---|
-| Saidkosim Abulkosimov | tbd |
-| Alina Caspar | tbd |
-| Andrin Lehmann | Scraper (overview + detail pages), data pipeline, BFS integration, project structure |
-| Maurice Salzmann | tbd |
+| Alina Caspar | Full analysis pipeline covering all three research questions: canton choropleth & occupation/ISCO breakdowns (RQ1), workload flexibility with BFS chi-square benchmark (RQ2), benefits frequency & canton heatmap (RQ3), plus drafting of the Results & Discussion text |
+| Andrin Lehmann | Project setup & structure, dynamic Selenium scraper (overview + detail pages), BFS BESTA / PX-Web integration, ISCO-08 mapping, QMD authoring, integration of teammates' branches, PDF render pipeline |
+| Maurice Salzmann | Data validation checks, cleansing pipeline steps (datatype enforcement, range checks, outlier filtering) |
 
 ## Project Structure
 

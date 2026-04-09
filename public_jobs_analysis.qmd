@@ -1,7 +1,7 @@
 ---
 title: "Swiss Public Sector Job Market Analysis"
 subtitle: "Analysis - CIP Project Group 106"
-author: ["Saidkosim Abulkosimov", "Alina Caspar", "Andrin Lehmann", "Maurice Salzmann"]
+author: ["Alina Caspar", "Andrin Lehmann", "Maurice Salzmann"]
 title-block-banner: true
 number-sections: true
 number-depth: 3
@@ -18,9 +18,30 @@ format:
     equation-numbering: true
     callout-numbered: true
     css: style.css
+  pdf:
+    documentclass: scrartcl
+    papersize: a4
+    geometry:
+      - margin=2cm
+      - top=1.8cm
+      - bottom=1.8cm
+    toc: false
+    number-sections: true
+    code-line-numbers: true
+    code-block-border-left: true
+    highlight-style: github
+    fig-pos: 'H'
+    fig-format: png
+    fig-dpi: 200
+    fontsize: 10pt
+    include-in-header:
+      text: |
+        \usepackage{float}
+        \usepackage{fvextra}
+        \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,commandchars=\\\{\}}
 
 execute:
-  echo: true
+  echo: false
   warning: false
   message: false
   cache: false
@@ -30,9 +51,25 @@ editor_options:
   chunk_output_type: console
 ---
 
-# Introduction and Overview
+# Introduction
 
-This project analyzes job advertisements within the Swiss public sector to examine how job requirements and working conditions vary depending on the candidate's field, as well as to compare patterns across different organizational types (e.g., cantons, municipalities, hospitals). The goal of this project is to demonstrate how web-scraped data can be gathered, cleaned, and analyzed within a data science process to answer research questions through visualization and quantitative analysis. For this purpose, we obtained publicly available listing data from publicjobs.ch, a dedicated job platform for the Swiss public sector. The dataset was enriched with official baseline employment distributions and salary benchmarks from the Swiss Federal Statistical Office (BFS), specifically the SAKE survey and the Lohnstrukturerhebung (LSE) 2022, allowing us to identify structural discrepancies and current labor market momentum. The acquisition approach relies on automated dynamic web scraping using Selenium and BeautifulSoup, complemented by BFS reference data integration.
+This project analyzes job advertisements within the Swiss public sector to examine how job requirements and working conditions vary across regions, occupations, and organisation types (cantons, municipalities, hospitals, etc.). It demonstrates how web-scraped data can be gathered, cleaned, and analysed within a complete data-science workflow to answer concrete research questions through visualisation and statistical analysis. The primary data source is publicjobs.ch, a dedicated job platform for the Swiss public sector, scraped via Selenium and BeautifulSoup. To contextualise the observed workload distribution against the broader Swiss labour market, the dataset is enriched with official employment statistics from the Swiss Federal Statistical Office (BFS), specifically the *Beschäftigungsstatistik* (BESTA) retrieved via the PX-Web API.
+
+The analysis is guided by three research questions: **(RQ1)** How does Swiss public-sector labour demand distribute geographically and by occupational class? **(RQ2)** Are job postings statistically distinguishable from the BFS workforce benchmark in terms of full-time / part-time split? **(RQ3)** Which fringe benefits are most commonly advertised, and how do they vary between part-time and full-time roles and across cantons?
+
+::: {.content-visible when-format="pdf"}
+
+# Methods
+
+**Data sources.** Two complementary sources are used. First, 1'056 job listings are collected from publicjobs.ch (March 2026 snapshot, 73 pages × ≈20 listings) via a Selenium-based dynamic scraper that handles JavaScript rendering, cookie banners, and pagination, with randomised polite delays. For each listing, a second scraping pass visits the detail page in parallel (thread pool) to extract advertised employee benefits. Second, the BFS BESTA reference dataset (table `px-x-0602000000_101`, "Beschäftigte nach Wirtschaftsabteilung, Beschäftigungsgrad und Geschlecht") is retrieved via the PX-Web API and parsed from JSON-stat2 format into a tidy DataFrame. Compliance with `robots.txt` was verified before scraping.
+
+**Cleansing.** Posting dates are parsed from `DD.MM.YYYY`, FTE columns are converted to numeric and reversed ranges (e.g. `100 - 60`) are corrected, duplicates and rows with missing critical fields are dropped. Canton URL slugs are normalised to standard German canton names. Each listing is enriched with (i) a heuristic seniority class (Einstieg / Fachkraft / Projektleitung / Stellvertretung / Führung) derived from title keywords, and (ii) an ISCO-08 major group derived from the publicjobs.ch occupation field via an explicit mapping table. Because publicjobs.ch truncates long category names at 33 characters, the ISCO mapping is augmented with the truncated forms so the join is complete (1'056 / 1'056 listings classified). Benefit chips are merged in via the listing's `detail_url` and one-hot encoded.
+
+**Analysis.** RQ1 is addressed descriptively with a canton-level choropleth, a seniority bar chart, and an ISCO bar chart. RQ2 combines an exploratory boxplot of FTE by seniority and a stacked-bar chart of part-time / full-time share by canton with a confirmatory $\chi^2$ test of independence comparing the 2026Q1 listings against the 2025Q1 BFS BESTA benchmark. RQ3 ranks the top 10 benefits by overall frequency, splits the rankings between part-time and full-time postings, and visualises geographic variation with a canton × benefit heatmap. The full reproducible code, including the scraper and the cleansing pipeline, is available in the project repository on GitHub and in the HTML render of this document; in the PDF report below, code chunks are suppressed for readability and only the resulting figures and discussion are shown.
+
+:::
+
+::: {.content-visible unless-format="pdf"}
 
 # Data Acquisition
 
@@ -78,13 +115,8 @@ if not os.path.exists(data_path):
 path_df_jobs_raw = os.path.join(data_path, "publicjobs_raw.json")             # raw scraped job listings (overview)
 path_df_jobs_benefits = os.path.join(data_path, "publicjobs_benefits.json")   # benefits from detail pages
 path_df_jobs_cleaned = os.path.join(data_path, "publicjobs_cleaned.json")     # cleaned job listings (merged)
-path_df_bfs_sake = os.path.join(data_path, "bfs_besta.json")                 # BFS BESTA employment data (via PX-Web API)
-path_df_bfs_lse = os.path.join(data_path, "bfs_lse_isco.json")               # BFS LSE salary data (parsed from Excel)
-path_lse_excel = os.path.join(data_path, "bfs_lse_2022_isco.xlsx")           # BFS LSE 2022 raw Excel download
+path_df_bfs_besta = os.path.join(data_path, "bfs_besta.json")                 # BFS BESTA employment data (via PX-Web API)
 path_geojson_cantons = os.path.join(data_path, "swissBOUNDARIES3D_1_3_TLM_KANTONSGEBIET.geojson")  # Swiss canton boundaries GeoJSON
-
-# #ToDo: Add additional file paths as needed for:
-# - any additional BFS reference datasets
 ```
 
 ## Dynamic Data Extraction with Selenium
@@ -95,7 +127,7 @@ The scraper performs the following steps:
 
 1. A Chrome WebDriver instance is started and navigated to the `/jobs` overview page. After the initial page load, a cookie consent banner is dismissed via an explicit DOM click on the decline button.
 2. On each page, BeautifulSoup parses the rendered HTML to locate all job card elements (`div.molecule-business-advertisement`). For each card, the scraper extracts the job title and detail URL from the first anchor tag, the company name from a labeled span element, and structured metadata fields (posting date, occupation field, workload, city, organization type) by matching Font Awesome icon classes to their corresponding value spans.
-3. The raw workload string (e.g., "80 – 100", "Vollzeit", "60") is parsed into normalized FTE boundaries (`fte_from`, `fte_to`) and a categorical work-time label. The canton is inferred from the URL path structure.
+3. The raw workload string (e.g., "80 - 100", "Vollzeit", "60") is parsed into normalized FTE boundaries (`fte_from`, `fte_to`) and a categorical work-time label. The canton is inferred from the URL path structure.
 4. After all cards on a page are processed, the scraper clicks the "Nächste Seite" pagination button using JavaScript execution (to avoid overlay-related click interception) and waits a randomized interval before loading the next page. A duplicate check based on detail URLs prevents repeated entries.
 
 ```{python}
@@ -245,7 +277,7 @@ for page in range(1, max_pages + 1):
                     work_time = "Teilzeit"
                 else:
                     # Try to parse range: "50 - 70" or "80 - 100"
-                    range_match = re.search(r"(\d{1,3})\s*[-–]\s*(\d{1,3})", workload_raw)
+                    range_match = re.search(r"(\d{1,3})\s*[--]\s*(\d{1,3})", workload_raw)
                     if range_match:
                         fte_from = float(range_match.group(1)) / 100
                         fte_to = float(range_match.group(2)) / 100
@@ -433,7 +465,7 @@ def scrape_benefits_from_url(url):
 thread_local = threading.local()
 
 if not os.path.exists(path_df_jobs_raw):
-    print("Raw data not found — run the overview scraper (section 2.3) first.")
+    print("Raw data not found - run the overview scraper (section 2.3) first.")
 else:
     df_overview = pd.read_json(path_df_jobs_raw)
     all_urls = df_overview["detail_url"].tolist()
@@ -445,11 +477,11 @@ else:
         df_existing = pd.read_json(path_df_jobs_benefits)
         scraped_urls = set(df_existing["detail_url"].dropna())
         remaining_urls = [u for u in all_urls if u not in scraped_urls]
-        print(f"Resuming — already scraped: {len(scraped_urls)}, remaining: {len(remaining_urls)}")
+        print(f"Resuming - already scraped: {len(scraped_urls)}, remaining: {len(remaining_urls)}")
     else:
         df_existing = pd.DataFrame(columns=["detail_url", "benefits"])
         remaining_urls = all_urls
-        print("Starting fresh — no checkpoint found.")
+        print("Starting fresh - no checkpoint found.")
 
     # Collect results
     all_results = list(df_existing.to_dict("records"))
@@ -538,14 +570,9 @@ else:
     print("Run both the overview scraper (2.3) and detail scraper (2.4) first.")
 ```
 
-::: {.callout-note}
-## Note on HTML Selectors
-The benefit tags are located inside `div.organism-business-jobs-detail__footer-benefits` on each detail page. Each benefit is a `<button class="molecule-action-tag">` with the text in a nested `<span class="molecule-typography-label__value">`. If publicjobs.ch updates their frontend, these selectors may need adjustment. Verify with browser DevTools (F12 → Elements) on any detail page.
-:::
-
 ## Integration of BFS Reference Data
 
-To contextualize our scraped data, we enriched the dataset with official labor market statistics from the Swiss Federal Statistical Office (BFS). Two datasets are integrated: the BESTA employment statistics (for workload comparison in RQ2) and the LSE salary benchmarks (for salary enrichment).
+To contextualize our scraped data, we enriched the dataset with official employment statistics from the Swiss Federal Statistical Office (BFS). The BESTA (Beschäftigungsstatistik) provides quarterly employment counts broken down by workload type (Vollzeit / Teilzeit) and serves as the benchmark for the RQ2 flexibility comparison.
 
 ### BFS BESTA: Employment by Sector and Beschäftigungsgrad (via PX-Web API)
 
@@ -561,17 +588,17 @@ The data is retrieved programmatically from the [BFS PX-Web API](https://www.pxw
 # "Beschäftigte nach Wirtschaftsabteilung, Beschäftigungsgrad und Geschlecht"
 #
 # Table dimensions (in order):
-#   [0] Wirtschaftsabteilung  — NOGA economic divisions
-#   [1] Geschlecht            — Total / Männer / Frauen
-#   [2] Beschäftigungsgrad    — Total / Vollzeit / Teilzeit
-#   [3] Quartal               — e.g. 2024Q3, 2024Q4, ...
+#   [0] Wirtschaftsabteilung  - NOGA economic divisions
+#   [1] Geschlecht            - Total / Männer / Frauen
+#   [2] Beschäftigungsgrad    - Total / Vollzeit / Teilzeit
+#   [3] Quartal               - e.g. 2024Q3, 2024Q4, ...
 
 bfs_pxweb_base = "https://www.pxweb.bfs.admin.ch/api/v1/de"
 besta_table = "px-x-0602000000_101/px-x-0602000000_101.px"
 besta_url = f"{bfs_pxweb_base}/{besta_table}"
 
-if os.path.exists(path_df_bfs_sake):
-    df_bfs_besta = pd.read_json(path_df_bfs_sake)
+if os.path.exists(path_df_bfs_besta):
+    df_bfs_besta = pd.read_json(path_df_bfs_besta)
     print(f"BFS BESTA data loaded from cache: {len(df_bfs_besta)} rows")
 else:
     # Step 1: Fetch table metadata to inspect variable codes and values
@@ -581,7 +608,7 @@ else:
 
     # Print available variables and their codes for reference
     for var in meta["variables"]:
-        print(f"\n[{var['code']}] — {var['text']}")
+        print(f"\n[{var['code']}] - {var['text']}")
         for code, val in zip(var["values"][:8], var["valueTexts"][:8]):
             print(f"  {code}: {val}")
         if len(var["values"]) > 8:
@@ -657,8 +684,8 @@ else:
     df_bfs_besta = pd.DataFrame(rows)
 
     # Save to JSON cache
-    df_bfs_besta.to_json(path_df_bfs_sake, orient="records", indent=2, force_ascii=False)
-    print(f"\nBFS BESTA data saved: {len(df_bfs_besta)} rows → {path_df_bfs_sake}")
+    df_bfs_besta.to_json(path_df_bfs_besta, orient="records", indent=2, force_ascii=False)
+    print(f"\nBFS BESTA data saved: {len(df_bfs_besta)} rows → {path_df_bfs_besta}")
 
 # Quick inspection
 print(f"\nDataset shape: {df_bfs_besta.shape}")
@@ -667,85 +694,15 @@ print(df_bfs_besta.head(15))
 ```
 
 
-::: {.callout-note}
-## Note on PX-Web API Usage
-The BFS PX-Web API returns data in `json-stat2` format, which uses a compact multi-dimensional array representation. The parsing logic above flattens this into a standard tabular DataFrame. If the API table structure changes (e.g., new variable codes), the `query_body` filters may need adjustment. Always inspect the metadata response first (`GET` on the table URL) to verify the available variable codes and values.
-:::
-
-### BFS LSE Salary Benchmarks (Lohnstrukturerhebung 2022)
-
-To provide salary benchmarks per occupation group, we integrate data from the BFS Lohnstrukturerhebung (LSE) 2022. The LSE provides median gross monthly salaries by ISCO-08 occupation group, broken down by sector, gender, and Kompetenzniveau. Since the detailed LSE tables with ISCO-08 breakdowns are published as downloadable Excel files (not directly via the PX-Web API), we load the data from a locally stored file.
-
-The relevant BFS publication is: [LSE 2022 — Löhne nach Berufsgruppen ISCO](https://www.bfs.admin.ch/news/de/2024-0127).
-
-```{python}
-#| eval: false
-
-# --- BFS LSE 2022: Median salary by ISCO-08 occupation group ---
-# Source: BFS LSE 2022, downloaded from:
-# https://www.bfs.admin.ch/bfs/de/home/statistiken/arbeit-erwerb/
-#   loehne-erwerbseinkommen-arbeitskosten/lohnstruktur/berufsgruppen.html
-
-# File path for the locally stored LSE Excel file
-path_lse_excel = os.path.join(data_path, "bfs_lse_2022_isco.xlsx")
-
-if os.path.exists(path_df_bfs_lse):
-    df_bfs_lse = pd.read_json(path_df_bfs_lse)
-    print(f"BFS LSE data loaded from cache: {len(df_bfs_lse)} rows")
-
-elif os.path.exists(path_lse_excel):
-    # Read LSE Excel — typically the relevant sheet has median salaries
-    # by ISCO major/sub-major group
-    # Note: header row and column structure depend on the specific BFS file version
-    # Adjust header= and usecols= parameters after inspecting the file
-    df_bfs_lse = pd.read_excel(
-        path_lse_excel,
-        header=5,  # #ToDo: Verify header row in the actual downloaded file
-        sheet_name=0
-    )
-    
-    # Clean column names
-    df_bfs_lse.columns = df_bfs_lse.columns.str.strip()
-    
-    # Display raw structure for inspection
-    print("Raw LSE columns:", list(df_bfs_lse.columns))
-    print(df_bfs_lse.head(10))
-    
-    # #ToDo: Rename and select relevant columns after inspecting the file structure
-    # Expected columns to extract:
-    # - ISCO code (e.g., "1", "11", "21", "22", ...)
-    # - Occupation group name (German)
-    # - Median gross monthly salary (standardized to full-time equivalent)
-    # - Number of observations (Anzahl)
-    
-    # Example rename (adjust to actual column names):
-    # df_bfs_lse = df_bfs_lse.rename(columns={
-    #     "Berufsgruppe": "isco_group_name",
-    #     "Zentralwert (Median)": "median_salary",
-    # })
-    
-    # Save to JSON cache
-    df_bfs_lse.to_json(path_df_bfs_lse, orient="records", indent=2, force_ascii=False)
-    print(f"\nBFS LSE data saved: {len(df_bfs_lse)} rows → {path_df_bfs_lse}")
-
-else:
-    print("LSE Excel file not found!")
-    print(f"Please download the LSE 2022 ISCO salary table from BFS and save it as:")
-    print(f"  {path_lse_excel}")
-    print("Download from: https://www.bfs.admin.ch/bfs/de/home/statistiken/")
-    print("  arbeit-erwerb/loehne-erwerbseinkommen-arbeitskosten/")
-    print("  lohnstruktur/berufsgruppen.html")
-```
-
 ### Mapping publicjobs.ch Occupation Fields to BFS Sectors and ISCO-08 Groups
 
-To enable joins between our scraped data and BFS reference datasets, we create explicit mapping tables. The publicjobs.ch platform uses its own occupation field categories (e.g., "Medizin / Ärzte / Pflege", "Informatik / IT"), which must be mapped to both NOGA economic divisions (for BESTA comparison) and ISCO-08 groups (for LSE salary benchmarks).
+To enable joins between our scraped data and BFS reference datasets, we create explicit mapping tables. The publicjobs.ch platform uses its own occupation field categories (e.g., "Medizin / Ärzte / Pflege", "Informatik / IT"), which we map to ISCO-08 major groups so that listings can be aggregated along an internationally comparable occupational classification.
 
 ```{python}
 #| eval: false
 
 # --- Mapping: publicjobs.ch occupation_field → ISCO-08 major groups ---
-# This mapping is approximate — some publicjobs categories span multiple ISCO groups.
+# This mapping is approximate - some publicjobs categories span multiple ISCO groups.
 # We assign the most representative ISCO major group (1-digit) for each category.
 
 isco_mapping = {
@@ -772,23 +729,28 @@ isco_mapping = {
     "Diverse":                                       {"isco": "9", "isco_name": "Hilfsarbeitskräfte"},
 }
 
+# NOTE on scraper truncation: publicjobs.ch returns occupation_field values
+# truncated to 33 characters + "..." in the listing card view (e.g.
+# "Bildungswesen / Lehrtätigkeit / S..." instead of the full
+# "Bildungswesen / Lehrtätigkeit / Sonderpädagogik"). To make the mapping
+# robust to this scraper artefact, we augment the dictionary with the
+# truncated form of every key longer than 33 characters.
+def _truncate_like_scraper(s, limit=33):
+    return s if len(s) <= limit else s[:limit] + "..."
+
+isco_mapping_full = dict(isco_mapping)  # keep originals
+for _k, _v in list(isco_mapping.items()):
+    _tk = _truncate_like_scraper(_k)
+    if _tk != _k:
+        isco_mapping_full[_tk] = _v
+
 # Convert mapping to DataFrame for easy joining
 df_isco_mapping = pd.DataFrame.from_dict(isco_mapping, orient="index").reset_index()
 df_isco_mapping.columns = ["occupation_field", "isco_major", "isco_major_name"]
 
 print("--- ISCO-08 Mapping Table ---")
 print(df_isco_mapping.to_string(index=False))
-
-# #ToDo: After scraping, verify all unique occupation_field values are covered:
-# unmapped = set(df_jobs_clean["occupation_field"].unique()) - set(isco_mapping.keys())
-# if unmapped:
-#     print(f"WARNING: Unmapped occupation fields: {unmapped}")
 ```
-
-::: {.callout-note}
-## Note on Mapping Granularity
-The ISCO-08 mapping above uses 1-digit major groups, which is a coarse approximation. Several publicjobs.ch categories (e.g., "Informatik / IT", "Finanzen / Steuern") map to the same ISCO major group "2 — Akademische Berufe". For finer salary differentiation, a 2-digit sub-major group mapping would be preferable (e.g., ISCO 25 for IT, ISCO 24 for business/finance). This can be refined once the actual LSE file structure is inspected.
-:::
 
 ## Disclaimer on Data Scope
 
@@ -815,15 +777,6 @@ print(f"\n--- Percentage missing ---")
 print((df_raw.isnull().sum() / len(df_raw) * 100).round(1))
 ```
 
-
-::: {.callout-important}
-## #ToDo: Discuss Missing Data Strategy
-After inspecting the missing value patterns, document the decision on how to handle gaps:
-
-- Which columns have acceptable missingness (e.g., `posting_date` might be missing for some listings)?
-- Should rows with missing `occupation_field` or `canton` be dropped or imputed?
-- Use a conservative approach (drop NAs) or targeted imputation where possible?
-:::
 
 ## Ensure Appropriate Column Datatypes
 
@@ -1026,7 +979,7 @@ print(f"Total rows removed: {len(df_cleaned) - len(df_jobs_clean)}")
 
 ## Canton Name Normalization and Mapping
 
-The canton information extracted from publicjobs.ch URLs uses lowercase slug format (e.g., "zurich", "graubuenden"). To enable merging with BFS datasets and proper visualization, we need to map these to official canton codes and names.
+The canton information extracted from publicjobs.ch URLs uses lowercase slug format (e.g., "zurich", "graubunden", "st-gallen"). To enable merging with BFS datasets and proper visualization, we need to map these to official canton codes and names.
 
 ```{python}
 #| eval: false
@@ -1076,19 +1029,20 @@ df_jobs_clean["seniority"] = df_jobs_clean["seniority"].astype("category")
 print(df_jobs_clean["seniority"].value_counts())
 ```
 
-## Enrichment: ISCO-08 Occupation Classification and Salary Join
+## Enrichment: ISCO-08 Occupation Classification
 
-Using the mapping table defined in section 2.5.3, we add ISCO-08 major group codes and BFS LSE median salary benchmarks to the cleaned dataset.
+Using the mapping table defined in section 2.5.3, we add ISCO-08 major group codes and group labels to the cleaned dataset.
 
 ```{python}
 #| eval: false
 
-# Apply ISCO mapping (defined in section 2.5.3)
+# Apply ISCO mapping (defined in section 2.5.3, augmented with the
+# scraper-truncated forms of long category names so the join is complete).
 df_jobs_clean["isco_major"] = df_jobs_clean["occupation_field"].map(
-    {k: v["isco"] for k, v in isco_mapping.items()}
+    {k: v["isco"] for k, v in isco_mapping_full.items()}
 )
 df_jobs_clean["isco_major_name"] = df_jobs_clean["occupation_field"].map(
-    {k: v["isco_name"] for k, v in isco_mapping.items()}
+    {k: v["isco_name"] for k, v in isco_mapping_full.items()}
 )
 
 # Check for unmapped fields
@@ -1098,13 +1052,6 @@ if len(unmapped) > 0:
 else:
     print("All occupation fields successfully mapped to ISCO-08 groups")
 
-# #ToDo: Join LSE median salaries (once LSE data is loaded and column names confirmed):
-# df_jobs_clean = df_jobs_clean.merge(
-#     df_bfs_lse[["isco_major", "median_salary"]],
-#     on="isco_major",
-#     how="left"
-# )
-# print(f"Salary data joined — rows with salary: {df_jobs_clean['median_salary'].notna().sum()}")
 ```
 
 ## Save Cleaned Dataset
@@ -1116,91 +1063,73 @@ df_jobs_clean.to_json(
     path_df_jobs_cleaned,
     orient="records",
     indent=2,
-    force_ascii=False
+    force_ascii=False,
     date_format="iso"
 )
 print(f"Cleaned dataset saved: {len(df_jobs_clean)} rows → {path_df_jobs_cleaned}")
 ```
 
 
-# Analysis: Geography, Workload Flexibility, and Benefits
-
-#start with df_jobs_clean = pd.read_json(path_df_jobs_cleaned)
-The collected and prepared data is used to examine three key research questions: We illustrate how public sector labor demand distributes across Swiss regions and organization types, analyze workload flexibility patterns compared to official BFS statistics, and assess which fringe benefits are most commonly offered.
-
-## RQ1: Geographic Distribution of Public Sector Labor Demand
-
-How does the current demand for public sector labour distribute across specific Swiss regions and organization types (e.g., healthcare vs. administration)?
-
-### Jobs by Canton
-
-::: {.callout-important}
-## #ToDo: Implement RQ1 Visualizations
-Create the following visualizations:
-
-1. **Choropleth map** of Switzerland showing job count per canton (use `plotly.express.choropleth_map` with Swiss cantons GeoJSON).
-2. **Bar chart** of jobs per occupation field, segmented by organization type.
-3. **Heatmap** showing the cross-tabulation of canton × occupation field.
-
-Use the canton codes mapped in the cleaning step. Load the Swiss cantons GeoJSON from a public source (e.g., GitHub).
 :::
+
+# Results and Discussion
+
+## RQ1: Geographic Distribution and Occupational Composition
+
+The choropleth map (@fig-jobs-per-canton) shows that the canton of **Zürich** has by far the highest number of job offers, accounting for 534 of 1'056 listings (50.6%) - more than all other cantons combined. **Luzern** follows with 98 postings (9.3%), while **Bern** and **Aargau** are tied at 88 postings each (8.3%). The remaining cantons are spread much more thinly, with a median of about 23 listings per canton and a long tail of smaller cantons contributing only a handful of openings. Even relative to Zürich's large population (~18% of Switzerland's residents), its share of public-sector listings (50.6%) corresponds to a per-capita over-representation of roughly **2.8×**, indicating that the imbalance is not merely a population effect but a real concentration of public-sector recruiting activity (and/or platform coverage) in the Zürich region.
 
 ```{python}
 #| label: fig-jobs-per-canton
-#| fig-cap: "Geographic distribution of public sector job listings across Swiss cantons"
+#| fig-cap: "Geographic distribution of public sector job listings across Swiss cantons (March 2026)."
 
-# Load cleaned dataset
 df_jobs_clean = pd.read_json(path_df_jobs_cleaned)
 
-# Map cities to cantons (canton name as used in GeoJSON)
-city_to_canton = {
-    "Zug": "Zug",
-    "Bülach": "Zürich",
-    "Muttenz": "Basel-Landschaft",
-    "Horgen": "Zürich",
-    "Genève": "Genève",
-    "Lausanne": "Vaud",
-    "Bern": "Bern",
-    "Basel": "Basel-Stadt",
-    # Add other cities in your dataset
+canton_slug_to_name = {
+    "zurich": "Zürich", "bern": "Bern", "luzern": "Luzern", "uri": "Uri",
+    "schwyz": "Schwyz", "obwalden": "Obwalden", "nidwalden": "Nidwalden",
+    "glarus": "Glarus", "zug": "Zug", "freiburg": "Fribourg",
+    "solothurn": "Solothurn", "basel-stadt": "Basel-Stadt",
+    "basel-landschaft": "Basel-Landschaft", "schaffhausen": "Schaffhausen",
+    "appenzell-ausserrhoden": "Appenzell Ausserrhoden",
+    "appenzell-innerrhoden": "Appenzell Innerrhoden",
+    "st-gallen": "St. Gallen", "graubunden": "Graubünden",
+    "aargau": "Aargau", "thurgau": "Thurgau", "tessin": "Ticino",
+    "waadt": "Vaud", "wallis": "Valais", "neuenburg": "Neuchâtel",
+    "genf": "Genève", "jura": "Jura",
 }
-df_jobs_clean['canton_name'] = df_jobs_clean['city'].map(city_to_canton)
 
-# Count jobs per canton
+df_jobs_clean["canton_name"] = df_jobs_clean["canton"].map(canton_slug_to_name)
 job_counts = df_jobs_clean.groupby("canton_name").size().reset_index(name="job_count")
 
-# Load Swiss cantons GeoJSON (canton boundaries)
 cantons_gdf = gpd.read_file(path_geojson_cantons)
-
-# Merge job counts with GeoDataFrame
 cantons_gdf = cantons_gdf.merge(job_counts, left_on="NAME", right_on="canton_name", how="left")
 cantons_gdf["job_count"] = cantons_gdf["job_count"].fillna(0)
 
-# Plot the map
-fig, ax = plt.subplots(1, 1, figsize=(10, 10))
+fig, ax = plt.subplots(1, 1, figsize=(8, 4.5))
 cantons_gdf.plot(
     column="job_count",
-    cmap="viridis",
-    linewidth=0.8,
+    cmap="Blues",
+    linewidth=0.6,
     edgecolor="black",
     legend=True,
     ax=ax
 )
-ax.set_title("Job Count per Canton — Switzerland", fontsize=16)
+ax.set_title("Job Listings per Canton - Switzerland (March 2026)", fontsize=12)
 ax.axis("off")
+plt.tight_layout()
 plt.show()
 ```
 
-### Jobs by Occupation Field and Organization Type
+We further categorised the job offers by seniority (@fig-jobs-by-seniority) and by ISCO-08 major group (@fig-jobs-by-isco). The overwhelming majority of positions (84%) are classified as **Fachkraft** - qualified professionals holding a completed vocational training or academic degree but without an explicit leadership title. Explicit **Führung** (management) titles account for roughly 6% of postings, **Einstieg** roles (internships, trainees, juniors) for about 5%, **Projektleitung** (project leads) for around 3%, and **Stellvertretung** (deputies) for just over 1%. The ISCO classification tells a complementary story: **Akademische Berufe** dominate at 71% of listings (747 of 1'056), driven by healthcare, education, and public-administration roles, followed by **Bürokräfte und verwandte Berufe** at 13% (139), with service occupations (6%), craft workers (5%), elementary occupations (5%), and explicit leadership roles (1%) making up the remainder. Even though only 6% of titles carry an explicit Führung label, the ISCO mapping reveals that more than two-thirds of postings require academic-level qualifications - an asymmetry indicating that public-sector advertisers brand most openings on the role's professional content rather than on its place in a management hierarchy.
 
 ```{python}
 #| label: fig-jobs-by-seniority
-#| fig-cap: "Job listings by seniority level"
+#| fig-cap: "Job listings by seniority level."
 
 df_jobs_clean = pd.read_json(path_df_jobs_cleaned)
 
 sns.set(style="whitegrid")
-plt.figure(figsize=(8, 5))
+plt.figure(figsize=(7, 3.5))
 ax = sns.countplot(
     x='seniority',
     data=df_jobs_clean,
@@ -1209,22 +1138,23 @@ ax = sns.countplot(
 )
 for p in ax.patches:
     height = p.get_height()
-    ax.annotate(f'{height}',
+    ax.annotate(f'{int(height)}',
                 (p.get_x() + p.get_width() / 2., height),
-                ha='center', va='bottom', fontsize=10, color='black')
-plt.title("Jobs by Seniority", fontsize=16)
+                ha='center', va='bottom', fontsize=9, color='black')
+plt.title("Jobs by Seniority", fontsize=12)
 plt.xlabel("Seniority Level")
 plt.ylabel("Number of Jobs")
+plt.tight_layout()
 plt.show()
 ```
 
 ```{python}
 #| label: fig-jobs-by-isco
-#| fig-cap: "Job listings by ISCO major group"
+#| fig-cap: "Job listings by ISCO-08 major group."
 
 df_jobs_clean = pd.read_json(path_df_jobs_cleaned)
 
-plt.figure(figsize=(10, 8))
+plt.figure(figsize=(8, 3.5))
 ax = sns.countplot(
     y='isco_major_name',
     data=df_jobs_clean,
@@ -1235,245 +1165,26 @@ for p in ax.patches:
     width = p.get_width()
     ax.annotate(f'{int(width)}',
                 (width + 0.5, p.get_y() + p.get_height() / 2),
-                ha='left', va='center', fontsize=10, color='black')
-plt.title("Jobs by ISCO Major", fontsize=16)
+                ha='left', va='center', fontsize=9, color='black')
+plt.title("Jobs by ISCO Major Group", fontsize=12)
 plt.xlabel("Number of Jobs")
-plt.ylabel("ISCO Major")
+plt.ylabel("")
 plt.tight_layout()
 plt.show()
 ```
 
-## RQ2: Statistical Analysis of Workload Flexibility
+## RQ2: Workload Flexibility - Public Sector Jobs vs. Swiss Labour Market
 
-**Research question:** Are there statistically significant associations between workload flexibility (Vollzeit vs. Teilzeit) and structural factors such as canton, occupation field, or organization type in the Swiss public sector job market?
-
-Workload flexibility is increasingly relevant for talent attraction. This section first provides a descriptive overview of workload patterns, then tests whether the probability or level of part-time employment can be explained by job or employer characteristics, using a combination of regression models, group comparison tests, and Bayesian inference.
-
-### Exploratory Overview
-
-```{python}
-#| label: fig-fte-by-seniority
-#| fig-cap: "FTE distribution by seniority level"
-
-df_jobs_clean = pd.read_json(path_df_jobs_cleaned)
-df_jobs_clean = df_jobs_clean.dropna(subset=['fte_from', 'fte_to', 'canton'])
-df_jobs_clean['fte_avg'] = df_jobs_clean[['fte_from', 'fte_to']].mean(axis=1)
-df_jobs_clean['workload_type'] = df_jobs_clean['fte_avg'].apply(lambda x: 'Teilzeit' if x < 1 else 'Vollzeit')
-
-plt.figure(figsize=(12, 6))
-sns.boxplot(
-    data=df_jobs_clean,
-    x='seniority',
-    y='fte_avg',
-    palette='Set2'
-)
-plt.ylabel("Average FTE")
-plt.xlabel("Seniority Level")
-plt.title("FTE Distribution by Seniority Level")
-plt.xticks(rotation=45)
-plt.tight_layout()
-plt.show()
-```
-
-```{python}
-#| label: fig-workload-by-canton
-#| fig-cap: "Part-time vs. full-time share by canton"
-
-df_jobs_clean = pd.read_json(path_df_jobs_cleaned)
-df_jobs_clean = df_jobs_clean.dropna(subset=['fte_from', 'fte_to', 'canton'])
-df_jobs_clean['fte_avg'] = df_jobs_clean[['fte_from', 'fte_to']].mean(axis=1)
-df_jobs_clean['workload_type'] = df_jobs_clean['fte_avg'].apply(lambda x: 'Teilzeit' if x < 1 else 'Vollzeit')
-
-canton_counts = df_jobs_clean.groupby(['canton', 'workload_type']).size().unstack(fill_value=0)
-canton_percent = canton_counts.div(canton_counts.sum(axis=1), axis=0) * 100
-
-canton_percent.plot(
-    kind='bar',
-    stacked=True,
-    figsize=(12, 6),
-    color=['skyblue', 'orange']
-)
-plt.ylabel("Percentage of Jobs")
-plt.xlabel("Canton")
-plt.title("Workload Distribution per Canton (Part-time vs Full-time)")
-plt.legend(title="Workload")
-plt.xticks(rotation=45)
-plt.tight_layout()
-plt.show()
-```
-
-### Statistical Tests
-
-::: {.callout-important}
-## #ToDo: Implement RQ2 Statistical Tests
-The following list contains **ideas and possible approaches** for the statistical analysis - not all of them need to be implemented. Select the analyses that best fit the data and the research question after the cleaning pipeline is finalized.
-
-**Prerequisite - Check for Normality:** Before choosing between parametric and non-parametric tests, verify whether `fte_to` is approximately normally distributed using a QQ-plot. This determines whether to use the t-test or the Wilcoxon test in step 4.
-
-1. **Pearson Correlation**: Compute the correlation coefficient *r* between `fte_to` (continuous workload) and the number of benefits offered per job listing. Report *r* and R² and interpret direction and strength. H₀: there is no linear association between FTE and benefit count.
-
-2. **Simple Linear Regression**: Fit a simple linear model `lm(fte_to ~ benefit_count)` to quantify whether jobs with more benefits systematically offer higher or lower FTE. Report the regression coefficient, p-value, and R².
-
-3. **Multiple Linear Regression with F-Test**: Fit a multiple regression model `lm(fte_to ~ occupation_field + org_type)` to test whether structural factors jointly predict workload level. Report the F-test statistic, overall model p-value, individual coefficients, and R². Interpret each coefficient conditionally (all other variables held constant).
-
-4. **Two-Sample t-Test or Wilcoxon Rank-Sum Test**: Compare the FTE distributions of two specific organization types (e.g., Spitäler vs. Gemeinden). If the QQ-plot confirms approximate normality, use the two-sample t-test. Otherwise use the non-parametric Wilcoxon rank-sum test (assumes symmetric distribution). Report the test statistic and p-value. H₀: the two groups have the same FTE distribution.
-
-5. **Bayesian Analysis with HDI and ROPE**: For a selected group comparison (e.g., Teilzeit proportion in Medizin vs. Informatik), estimate a Beta posterior analytically or via MCMC. Report the 95% HDI (Highest Density Interval) of the posterior difference. Define a ROPE around zero and assess what proportion of the posterior falls inside vs. outside the ROPE to evaluate practical significance beyond a binary p-value.
-
-6. **Logistic Regression / GLM Binomial**: Model `is_teilzeit ~ occupation_field + org_type + benefit_count` using a Binomial GLM. Report Odds Ratios (`exp(coefficients)`) with 95% confidence intervals for each predictor. Evaluate model quality using AIC (lower = better) and a ROC curve with AUC. Compare to a null model (intercept-only) to assess overall model fit.
-
-For each implemented test, report: null hypothesis, test statistic / posterior summary, p-value / Odds Ratio / HDI, and a brief interpretation.
-:::
-
-```{python}
-#| eval: false
-#| label: fig-qqplot-fte
-#| fig-cap: "QQ-Plot: Normality check for fte_to"
-
-# #ToDo: Check normality of fte_to before choosing t-test vs. Wilcoxon
-# import scipy.stats as stats
-#
-# fig, ax = plt.subplots()
-# stats.probplot(df_jobs_clean["fte_to"].dropna(), dist="norm", plot=ax)
-# ax.set_title("QQ-Plot: fte_to vs. Normal Distribution")
-# plt.tight_layout()
-# plt.show()
-# # If points lie approximately on the diagonal line → normality holds → use t-test
-# # If strong deviations → use Wilcoxon rank-sum test
-```
-
-```{python}
-#| eval: false
-#| label: tbl-correlation-fte-benefits
-#| tbl-cap: "Pearson correlation: FTE vs. benefit count"
-
-# #ToDo: Implement Pearson correlation
-# r = df_jobs_clean["fte_to"].corr(df_jobs_clean["benefit_count"])
-# r_squared = r ** 2
-# print(f"Pearson r = {r:.3f}, R² = {r_squared:.3f}")
-```
-
-```{python}
-#| eval: false
-#| label: tbl-simple-regression-fte-benefits
-#| tbl-cap: "Simple linear regression: fte_to ~ benefit_count"
-
-# #ToDo: Implement simple linear regression
-# import statsmodels.formula.api as smf
-#
-# model = smf.ols("fte_to ~ benefit_count", data=df_jobs_clean).fit()
-# print(model.summary())
-```
-
-```{python}
-#| eval: false
-#| label: tbl-multiple-regression-fte
-#| tbl-cap: "Multiple linear regression with F-test: fte_to ~ occupation_field + org_type"
-
-# #ToDo: Implement multiple linear regression
-# import statsmodels.formula.api as smf
-#
-# model_multi = smf.ols("fte_to ~ C(occupation_field) + C(org_type)", data=df_jobs_clean).fit()
-# print(model_multi.summary())
-```
-
-```{python}
-#| eval: false
-#| label: tbl-wilcoxon-fte-orgtypes
-#| tbl-cap: "Two-sample t-test or Wilcoxon rank-sum test: FTE in Spitäler vs. Gemeinden"
-
-# #ToDo: Implement two-sample t-test OR Wilcoxon rank-sum test (depending on QQ-plot result)
-# from scipy.stats import ttest_ind, ranksums
-#
-# group_a = df_jobs_clean[df_jobs_clean["org_type"] == "Spital"]["fte_to"].dropna()
-# group_b = df_jobs_clean[df_jobs_clean["org_type"] == "Gemeinde"]["fte_to"].dropna()
-#
-# # Option A: Two-sample t-test (if QQ-plot confirms normality)
-# stat, p = ttest_ind(group_a, group_b)
-# print(f"t-test: t = {stat:.2f}, p = {p:.4f}")
-#
-# # Option B: Wilcoxon rank-sum test (if normality not confirmed)
-# stat, p = ranksums(group_a, group_b)
-# print(f"Wilcoxon W = {stat:.2f}, p = {p:.4f}")
-```
-
-```{python}
-#| eval: false
-#| label: tbl-bayesian-rope
-#| tbl-cap: "Bayesian analysis with HDI and ROPE: Teilzeit proportion Medizin vs. Informatik"
-
-# #ToDo: Implement Bayesian Beta posterior + ROPE
-# from scipy.stats import beta as beta_dist
-#
-# grp_medizin = df_jobs_clean[df_jobs_clean["occupation_field"] == "Medizin / Ärzte / Pflege"]
-# grp_it      = df_jobs_clean[df_jobs_clean["occupation_field"] == "Informatik / IT"]
-#
-# z_m = (grp_medizin["work_time"] == "Teilzeit").sum()
-# n_m = len(grp_medizin)
-# z_it = (grp_it["work_time"] == "Teilzeit").sum()
-# n_it = len(grp_it)
-#
-# a, b = 1, 1
-# post_m  = beta_dist(a + z_m,  b + n_m  - z_m)
-# post_it = beta_dist(a + z_it, b + n_it - z_it)
-#
-# samples = post_m.rvs(10000) - post_it.rvs(10000)
-# rope_low, rope_high = -0.05, 0.05
-# pct_in_rope = np.mean((samples >= rope_low) & (samples <= rope_high))
-# print(f"Posterior mean difference: {samples.mean():.3f}")
-# print(f"95% credible interval: [{np.percentile(samples,2.5):.3f}, {np.percentile(samples,97.5):.3f}]")
-# print(f"Proportion of posterior in ROPE {rope_low}–{rope_high}: {pct_in_rope:.2%}")
-```
-
-```{python}
-#| eval: false
-#| label: tbl-logistic-regression
-#| tbl-cap: "Logistic Regression (GLM Binomial): predictors of Teilzeit"
-
-# #ToDo: Implement Logistic Regression / GLM Binomial
-# import statsmodels.formula.api as smf
-# from sklearn.metrics import roc_auc_score, RocCurveDisplay
-#
-# df_model = df_jobs_clean.copy()
-# df_model["is_teilzeit"] = (df_model["work_time"] == "Teilzeit").astype(int)
-# df_model = df_model.dropna(subset=["is_teilzeit", "occupation_field", "org_type", "benefit_count"])
-#
-# model_logit = smf.logit(
-#     "is_teilzeit ~ C(occupation_field) + C(org_type) + benefit_count",
-#     data=df_model
-# ).fit()
-# print(model_logit.summary())
-#
-# odds_ratios = np.exp(model_logit.params)
-# conf_int_or = np.exp(model_logit.conf_int())
-# print("\n--- Odds Ratios with 95% CI ---")
-# print(pd.concat([odds_ratios, conf_int_or], axis=1).rename(
-#     columns={0: "OR", 1: "CI_low", 2: "CI_high"}))
-#
-# model_null = smf.logit("is_teilzeit ~ 1", data=df_model).fit(disp=0)
-# print(f"\nAIC full model: {model_logit.aic:.1f}")
-# print(f"AIC null model: {model_null.aic:.1f}")
-#
-# y_pred_prob = model_logit.predict(df_model)
-# auc = roc_auc_score(df_model["is_teilzeit"], y_pred_prob)
-# print(f"\nAUC: {auc:.3f}")
-# RocCurveDisplay.from_predictions(df_model["is_teilzeit"], y_pred_prob)
-# plt.title("ROC Curve: Logistic Regression (Teilzeit prediction)")
-# plt.show()
-```
-
-### Workload Flexibility: Job Postings vs. BFS Employment Benchmark
-
-To assess whether public-sector job postings reflect the actual workload structure of the Swiss labour force, the observed Teilzeit / Vollzeit distribution in the 2026Q1 job listings is compared against the corresponding BFS BESTA reference figures for 2025Q1. A chi-square test of independence evaluates whether the two distributions are statistically distinguishable.
+For 2026Q1, **59% of advertised positions are part-time (626 of 1'056)** and **41% are full-time (430 of 1'056)**. The official BFS BESTA reference for 2025Q1 shows the exact opposite split: part-time roles account for 41% (2'262'815 of 5'511'284) and full-time for 59% (3'248'469 of 5'511'284) of total employment in Switzerland (@fig-flex-comparison). A $\chi^2$ test of independence (H$_0$: identical part-time / full-time distribution in postings and BFS reference; H$_1$: distributions differ) on the raw counts rejects H$_0$ at any conventional level (**$\chi^2 = 144.11$, $df = 1$, $p \approx 3.36 \times 10^{-33}$**). Because the BFS sample size alone ($\approx 5.5$ million) makes any non-trivial difference statistically significant, we additionally compute Cohen's $h$ on the two part-time proportions, a sample-size-independent effect-size measure: $h \approx 0.37$, which falls in Cohen's **small-to-medium** range and confirms that the gap is not merely an artefact of statistical power. The advertised jobs in this sample are therefore not only significantly but also substantively skewed toward part-time arrangements relative to the overall workforce - a pattern most plausibly driven by healthcare, social services, and education, where part-time work is structurally more common.
 
 ```{python}
 #| label: fig-flex-comparison
-#| fig-cap: "Workload flexibility: job postings (2026Q1) vs. BFS employment benchmark (2025Q1)"
+#| fig-cap: "Workload share: publicjobs.ch listings (2026Q1) vs. BFS BESTA employment benchmark (2025Q1)."
 
 from scipy.stats import chi2_contingency
 
 jobs_df = pd.read_json(path_df_jobs_cleaned)
-stats_df = pd.read_json(path_df_bfs_sake)
+stats_df = pd.read_json(path_df_bfs_besta)
 
 jobs_df['posting_date'] = pd.to_datetime(jobs_df['posting_date'], unit='ms')
 jobs_df['fte_to'] = jobs_df['fte_to'].fillna(jobs_df['fte_from'])
@@ -1496,48 +1207,117 @@ flex_compare_pct = pd.DataFrame({
     'BFS 2025Q1': emp_flex_pct
 }).fillna(0)
 
-flex_compare_pct.T.plot(kind='bar', figsize=(6, 4))
+ax = flex_compare_pct.T.plot(kind='bar', figsize=(6, 3), color=['#4C72B0', '#DD8452'])
 plt.ylabel('Percentage (%)')
-plt.title('Flexibility Comparison (Part-time vs Full-time)')
+plt.title('Part-time vs. Full-time Share', fontsize=11)
 plt.xticks(rotation=0)
+plt.legend(title='', fontsize=9)
+plt.tight_layout()
+plt.show()
+
+# Chi-square test of independence (H0: equal Teilzeit/Vollzeit distribution
+# in job postings vs. BFS reference; H1: distributions differ).
+flex_compare_counts = pd.DataFrame({
+    'Jobs 2026Q1': [jobs_flex_counts.get('Teilzeit', 0), jobs_flex_counts.get('Vollzeit', 0)],
+    'BFS 2025Q1':  [emp_flex_counts.get('Teilzeit', 0),  emp_flex_counts.get('Vollzeit', 0)]
+}, index=['Teilzeit', 'Vollzeit'])
+chi2, p, dof, expected = chi2_contingency(flex_compare_counts)
+
+# Cohen's h on the two part-time proportions: a sample-size-independent
+# effect-size measure suitable when comparing two independent groups.
+# Cohen's thresholds: |h| < 0.2 negligible, < 0.5 small-to-medium,
+#                     < 0.8 medium-to-large, >= 0.8 large.
+p_jobs_pt = jobs_flex_counts.get('Teilzeit', 0) / jobs_flex_counts.sum()
+p_bfs_pt  = emp_flex_counts.get('Teilzeit', 0)  / emp_flex_counts.sum()
+cohen_h = 2 * np.arcsin(np.sqrt(p_jobs_pt)) - 2 * np.arcsin(np.sqrt(p_bfs_pt))
+```
+
+The share of part-time positions also varies markedly across cantons (@fig-workload-by-canton). Among cantons with a meaningful number of listings, **Luzern** stands out at the top with roughly 80% of its listings advertised as part-time, closely followed by **Schwyz** (74%) and **Zürich** (63%). **Aargau** sits near the middle of the distribution at around 57%, while **Bern** shows a clearly lower share of about 40%. At the opposite end of the spectrum, **St. Gallen** advertises only 11% of its postings as part-time, and **Solothurn** shows no part-time listings at all (0 of 15). These cross-canton differences are largely consistent with the underlying occupational mix of each canton's snapshot: Luzern, Schwyz and Zürich are dominated by healthcare, education and social-services postings, where part-time is the structural norm, whereas the few listings from Solothurn and St. Gallen in this sample are concentrated in security, technical and craft roles that are traditionally advertised full-time. The seniority breakdown of FTE (visible in the box-plot of average FTE per seniority level, see HTML render) further confirms that **Fachkraft** roles offer by far the widest distribution of working hours, while project-leadership and deputy positions are almost never advertised below 60% FTE - meaning workload flexibility is structurally limited at the management level and concentrated in the qualified-professional segment.
+
+```{python}
+#| label: fig-workload-by-canton
+#| fig-cap: "Part-time vs. Full-time share by canton."
+
+df_jobs_clean = pd.read_json(path_df_jobs_cleaned)
+df_jobs_clean = df_jobs_clean.dropna(subset=['fte_from', 'fte_to', 'canton'])
+df_jobs_clean['fte_avg'] = df_jobs_clean[['fte_from', 'fte_to']].mean(axis=1)
+df_jobs_clean['workload_type'] = df_jobs_clean['fte_avg'].apply(
+    lambda x: 'Part-time' if x < 1 else 'Full-time'
+)
+
+# Map canton URL slugs to proper capitalised canton names
+canton_slug_to_name = {
+    "zurich": "Zürich", "bern": "Bern", "luzern": "Luzern", "uri": "Uri",
+    "schwyz": "Schwyz", "obwalden": "Obwalden", "nidwalden": "Nidwalden",
+    "glarus": "Glarus", "zug": "Zug", "freiburg": "Fribourg",
+    "solothurn": "Solothurn", "basel-stadt": "Basel-Stadt",
+    "basel-landschaft": "Basel-Landschaft", "schaffhausen": "Schaffhausen",
+    "appenzell-ausserrhoden": "Appenzell AR",
+    "appenzell-innerrhoden": "Appenzell IR",
+    "st-gallen": "St. Gallen", "graubunden": "Graubünden",
+    "aargau": "Aargau", "thurgau": "Thurgau", "tessin": "Ticino",
+    "waadt": "Vaud", "wallis": "Valais", "neuenburg": "Neuchâtel",
+    "genf": "Genève", "jura": "Jura",
+}
+df_jobs_clean['canton_name'] = df_jobs_clean['canton'].map(canton_slug_to_name)
+
+canton_counts = df_jobs_clean.groupby(['canton_name', 'workload_type']).size().unstack(fill_value=0)
+canton_percent = canton_counts.div(canton_counts.sum(axis=1), axis=0) * 100
+# Ensure consistent column order so colours stay aligned with the legend
+canton_percent = canton_percent[['Part-time', 'Full-time']]
+
+canton_percent.plot(
+    kind='bar',
+    stacked=True,
+    figsize=(9, 3.5),
+    color=['#4C72B0', '#DD8452']
+)
+plt.ylabel("Percentage of Jobs")
+plt.xlabel("Canton")
+plt.title("Workload Distribution per Canton (Part-time vs. Full-time)", fontsize=11)
+plt.legend(title="Workload", fontsize=9)
+plt.xticks(rotation=45, fontsize=9, ha='right')
 plt.tight_layout()
 plt.show()
 ```
 
+::: {.content-visible unless-format="pdf"}
+
 ```{python}
-#| label: tbl-chi2-flex
-#| tbl-cap: "Chi-square test: workload flexibility — job postings vs. BFS benchmark"
+#| label: fig-fte-by-seniority
+#| fig-cap: "FTE distribution by seniority level (HTML only)."
 
-flex_compare_counts = pd.DataFrame({
-    'Jobs 2026Q1': [jobs_flex_counts.get('Teilzeit', 0), jobs_flex_counts.get('Vollzeit', 0)],
-    'BFS 2025Q1': [emp_flex_counts.get('Teilzeit', 0), emp_flex_counts.get('Vollzeit', 0)]
-}, index=['Teilzeit', 'Vollzeit'])
+df_jobs_clean = pd.read_json(path_df_jobs_cleaned)
+df_jobs_clean = df_jobs_clean.dropna(subset=['fte_from', 'fte_to', 'canton'])
+df_jobs_clean['fte_avg'] = df_jobs_clean[['fte_from', 'fte_to']].mean(axis=1)
+df_jobs_clean['workload_type'] = df_jobs_clean['fte_avg'].apply(lambda x: 'Teilzeit' if x < 1 else 'Vollzeit')
 
-print("Flexibility comparison (Jobs 2026Q1 vs BFS 2025Q1):")
-print(flex_compare_counts)
-
-chi2, p, dof, expected = chi2_contingency(flex_compare_counts)
-print(f"\nChi-square statistic: {chi2:.2f}")
-print(f"Degrees of freedom:   {dof}")
-print(f"p-value:              {p:.4e}")
+plt.figure(figsize=(10, 5))
+sns.boxplot(
+    data=df_jobs_clean,
+    x='seniority',
+    y='fte_avg',
+    palette='Set2'
+)
+plt.ylabel("Average FTE")
+plt.xlabel("Seniority Level")
+plt.title("FTE Distribution by Seniority Level")
+plt.xticks(rotation=30)
+plt.tight_layout()
+plt.show()
 ```
+
+:::
 
 ## RQ3: Benefits and Attractiveness
 
-Which fringe benefits (e.g., Home Office, public transport contributions, central location) are most frequently used to attract talent in the public sector, and do these vary by canton or workload?
+The benefit analysis (@fig-benefits-frequency) shows that Swiss public-sector employers predominantly advertise non-monetary fringe benefits. **Mitarbeitendenförderung** (staff development support, 48% of listings) and **Gute Vorsorgeleistungen** (strong pension provisions, 46%) are the most frequently offered benefits, reflecting the sector's traditionally strong focus on employment security and long-term stability. **Gleitzeit** (flexible working hours, 37%) and **ÖV-Anbindung** (public-transport accessibility, 35%) also feature prominently, consistent with the predominantly urban location of the listed positions.
 
-::: {.callout-important}
-## #ToDo: Implement RQ3 Analysis
-Benefit tags are already extracted from the overview cards (section 2.4) and encoded as dummy variables. Implement the following visualizations:
-
-1. **Frequency chart** of top N most common benefits.
-2. **Heatmap** of benefit occurrence by canton or occupation field.
-3. **Correlation analysis** between offered benefits and workload flexibility (e.g., do part-time roles offer more Home Office?).
-:::
+The distribution of these benefits is uneven between part-time and full-time job offerings. In general, benefits are mentioned less frequently in part-time postings than in full-time ones. The gap is particularly pronounced for **Mitarbeitendenförderung** (66% full-time vs. 36% part-time), **Bezahlte Pausen** (paid breaks, 48% vs. 20%), and **Beitrag Aus- und Weiterbildung** (training contributions, 46% vs. 23%) - effectively a factor of roughly two. The notable exception is **Gute Vorsorgeleistungen**, which is offered at a nearly identical rate in both workload types (45% vs. 46%), in line with Swiss occupational-pension regulations that apply irrespective of contract size. Geographically (@fig-benefits-by-canton), **Zürich** clearly provides the widest range of employee-support benefits in absolute terms - unsurprising given it hosts more than half of all listings - followed by a second tier of **Bern**, **Luzern**, and **Aargau**. The canton-level benefit profile largely mirrors listing volume rather than indicating structurally different benefit policies across regions. In summary, the availability of fringe benefits is not evenly distributed across cantons or contract types: full-time positions tend to advertise roughly twice as many top-tier benefits as part-time roles, with the important exception of pension provisions, which remain consistent across contract types and reinforce the sector's identity as a stable, long-term employer.
 
 ```{python}
 #| label: fig-benefits-frequency
-#| fig-cap: "Most frequently offered fringe benefits in public sector job listings"
+#| fig-cap: "Top-10 benefits advertised in public-sector listings, split by part-time / full-time."
 
 df_jobs_clean = pd.read_json(path_df_jobs_cleaned)
 benefits_clean = pd.read_json(path_df_jobs_benefits)
@@ -1563,63 +1343,52 @@ pct_df = pct_df.transpose().sort_values(by='Vollzeit', ascending=False)
 top_benefits = pct_df.head(10).reset_index().rename(columns={'index': 'Benefit'})
 melted = top_benefits.melt(id_vars='Benefit', var_name='Workload', value_name='Percentage')
 
-plt.figure(figsize=(10, 6))
+plt.figure(figsize=(8, 4))
 sns.barplot(data=melted, y='Benefit', x='Percentage', hue='Workload')
 plt.xlabel("Percentage of Jobs Offering Benefit (%)")
-plt.ylabel("Benefit")
-plt.title("Top 10 Benefits: Part-time vs Full-time Jobs")
-plt.legend(title='Workload')
+plt.ylabel("")
+plt.title("Top 10 Benefits: Part-time vs. Full-time Jobs", fontsize=11)
+plt.legend(title='Workload', fontsize=9)
 plt.tight_layout()
 plt.show()
 ```
 
 ```{python}
 #| label: fig-benefits-by-canton
-#| fig-cap: "Heatmap: Top 10 benefits occurrence by canton"
+#| fig-cap: "Top-10 benefits occurrence by canton (absolute counts)."
 
 heatmap_data = merged.dropna(subset=['canton']).groupby('canton')[top_benefits['Benefit']].sum()
 
-plt.figure(figsize=(12, 8))
-sns.heatmap(heatmap_data, cmap="YlGnBu", annot=True, fmt="d")
-plt.title("Top 10 Benefits Occurrence by Canton")
-plt.xlabel("Benefit")
-plt.ylabel("Canton")
+plt.figure(figsize=(9, 4.5))
+sns.heatmap(heatmap_data, cmap="YlGnBu", annot=True, fmt="d", annot_kws={"size": 8})
+plt.title("Top 10 Benefits by Canton (counts)", fontsize=11)
+plt.xlabel("")
+plt.ylabel("")
+plt.xticks(rotation=30, ha='right', fontsize=8)
+plt.yticks(fontsize=8)
 plt.tight_layout()
 plt.show()
-
-avg_pct = pct_df.mean(axis=1).sort_values(ascending=False)
-print("Top benefits offered overall:")
-print(avg_pct.head(10))
 ```
-
-# Results and Discussion
-
-::: {.callout-important}
-## #ToDo: Write Results and Discussion
-Summarize the key findings from all three research questions:
-
-- **RQ1**: Describe the geographic distribution patterns. Which cantons/regions show the highest demand? Which organization types dominate?
-- **RQ2**: Compare workload flexibility across sectors and regions. How does the publicjobs.ch profile deviate from BFS SAKE baseline?
-- **RQ3**: Identify the most common benefits and discuss regional/sectoral variation.
-
-Reference all figures and tables using Quarto cross-references (e.g., `@fig-jobs-per-canton`).
-:::
-
 
 # Limitations and Future Work
 
-::: {.callout-important}
-## #ToDo: Write Limitations and Future Work
-Address at least:
+Several limitations should be considered when interpreting these findings. First, the dataset represents a single cross-sectional snapshot of publicjobs.ch as of March 2026. Job posting volumes may exhibit seasonal patterns - for instance, public institutions may recruit more heavily at the start of an academic or fiscal year - and without repeated scraping at different points in time it is not possible to determine whether the observed distribution is representative of typical demand or reflects seasonal peaks. Whether such seasonality exists, and how large its effect might be, remains an open question.
 
-- **Cross-sectional snapshot**: publicjobs.ch only shows active listings; no historical trend analysis possible without repeated scraping.
-- **Single source bias**: publicjobs.ch covers mainly public sector; comparison with private sector platforms (e.g., jobs.ch) would add perspective.
-- **Benefit extraction**: If detail page scraping is incomplete, acknowledge this limitation.
-- **Canton inference from URL**: Canton is parsed from the URL slug, which may not always match the actual location of the position.
-- **BFS mapping challenges**: Manual mapping from publicjobs categories to ISCO-08 involves subjective judgment.
-- **Potential extensions**: Time series analysis via periodic re-scraping, NLP on job descriptions, salary prediction models.
-:::
+Second, the platform covers the public sector exclusively. Findings do not generalize to private-sector employment, and any comparison with the broader Swiss labour market (e.g., against BFS BESTA figures) should be interpreted as a structural contrast rather than a direct equivalence.
 
+Third, canton assignment is inferred from the URL slug of the job listing rather than from a verified location field. In cases where an employer's registered address differs from the actual workplace, or where positions are advertised cross-canton, this approach may produce misclassifications.
+
+Fourth, the benefit extraction relies on successfully rendering each job's detail page. Any listings for which the detail page could not be loaded would have no benefit data, potentially biasing the benefit frequency estimates.
+
+Fifth, the dataset relies on a single source platform. publicjobs.ch is one of several aggregators used by Swiss public-sector employers; institutions that recruit exclusively through their own portals, regional aggregators, or LinkedIn are systematically under-represented. The findings should therefore be read as reflecting the publicjobs.ch listing population rather than the entirety of the Swiss public-sector labour market.
+
+For future work, periodic re-scraping at regular intervals would enable time-series analysis and allow seasonal effects to be quantified and controlled for. Extending the scraper to comparable platforms (e.g., jobs.ch, ostjob.ch, individual cantonal portals) would mitigate the single-platform bias and enable public-private sector comparisons. Applying NLP to the free-text job descriptions could yield richer features - such as required qualifications, language requirements, or contract duration - that are not available in the structured metadata fields.
+
+# Conclusion
+
+This project demonstrates that publicly available job advertisement data, collected via automated web scraping, can yield structured insights into the Swiss public sector labour market. Across 1,056 listings from publicjobs.ch, three consistent patterns emerge. Geographic demand is heavily concentrated in Zürich, with canton-level disparities likely reflecting population size and institutional density rather than deliberate recruitment policy. The workload analysis reveals that public-sector advertisers disproportionately offer part-time positions relative to the BFS employment benchmark - a structural characteristic likely driven by healthcare and education, where flexible arrangements are common practice. Benefit profiling confirms a sector-wide emphasis on long-term employment security, flexible working hours, and commuting support, with relatively little variation across cantons or contract types.
+
+From a methodological perspective, the project illustrates both the potential and the constraints of scraping-based data collection: the dataset is broad and timely, but its snapshot nature limits causal or longitudinal inference. Future work building on this foundation - particularly repeated scraping cycles and cross-platform comparison - would substantially increase the analytical depth achievable with this approach.
 
 # Appendix: Use of GenAI
 
