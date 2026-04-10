@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This project analyzes job advertisements within the Swiss public sector using data scraped from [publicjobs.ch](https://publicjobs.ch). It is submitted as part of the CIP module (Coding in Python) at HSLU — Master in Applied Information and Data Science.
+This project analyzes job advertisements within the Swiss public sector using data scraped from [publicjobs.ch](https://publicjobs.ch). It is submitted as part of the CIP module (Data Collection, Integration and Preprocessing) at HSLU — Master in Applied Information and Data Science.
 
 ## Research Questions
 
